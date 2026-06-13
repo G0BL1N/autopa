@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Web UI (Node deps). The built bundle (web/dist) IS committed so the printer
+# needs no Node toolchain — see README "Installation".
+node_modules/

@@ -1,0 +1,26 @@
+:root {
+  color-scheme: dark;
+
+  --bg: #0e1116;
+  --bg-raised: #151a21;
+  --bg-inset: #0a0d11;
+  --border: #232b36;
+
+  --text: #d8dee9;
+  --text-dim: #8b94a7;
+
+  --accent: #4cc38a;
+  --accent-dim: #2c7a57;
+  --warn: #e3b341;
+  --bad: #e5615e;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 16px;
+  --sp-4: 24px;
+
+  --radius: 8px;
+
+  --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
+}

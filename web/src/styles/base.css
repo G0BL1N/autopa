@@ -1,0 +1,59 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16.5px;
+  line-height: 1.5;
+}
+
+code, pre { font-family: var(--mono); font-size: 0.92em; }
+
+h2 {
+  font-size: 1.05rem;
+  margin: 0 0 var(--sp-2);
+  font-weight: 600;
+}
+
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+
+.dim { color: var(--text-dim); }
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent-dim); }
+button.primary {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+  font-weight: 600;
+}
+button.primary:hover { background: var(--accent); color: #08130d; }
+button:disabled { opacity: 0.5; cursor: default; }
+
+input, select, textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-1) var(--sp-2);
+}
+input:focus, select:focus, textarea:focus, button:focus-visible {
+  outline: 1px solid var(--accent-dim);
+  outline-offset: 1px;
+}
