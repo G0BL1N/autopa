@@ -104,7 +104,7 @@
       <em>your</em> macro (move to a bin, calibrate, clean) only when no profile
       exists yet, then it's recalled on every later print:</p>
     <pre class="dim example">AUTOPA_APPLY MATERIAL=PLA TEMP=220 ELSE=AUTOPA_CALIBRATE</pre>
-    <p class="dim hint">See <code>autopa.cfg</code> for the
+    <p class="dim hint">See <code>CONFIG.md</code> for the
       <code>AUTOPA_CALIBRATE</code> macro stub.</p>
     <p class="dim hint">Let the slicer fill material + temp — PrusaSlicer
       <em>Start G-code</em>:</p>

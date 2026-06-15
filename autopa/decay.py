@@ -94,6 +94,7 @@ class DecayMixin:
         import numpy as np
         orig_pa = self._get_pa()
         stops = []
+        self._save_gcode_state()        # restore G90/G91 + M82/M83 afterwards
         try:
             self._set_pa(p['pa'])
             collector = lc.get_collector()
@@ -126,6 +127,11 @@ class DecayMixin:
                 self._set_pa(orig_pa)
             except Exception:
                 logging.exception("autopa decay: PA restore failed")
+            try:
+                # never moves XY (relative-E only) and may run un-homed -> no MOVE
+                self._restore_gcode_state(move=False)
+            except Exception:
+                logging.exception("autopa decay: gcode-state restore failed")
         stops.sort()
         meta = self._base_meta(lc, 'decay', gcmd)
         meta.update({'flow': p['flow'], 'pulse': p['pulse'], 'off': p['off'],
@@ -287,7 +293,11 @@ class DecayMixin:
             path = self._save_capture(arr, meta, dict(kind='decay', **res))
             if path:
                 lines.append("capture saved: %s" % path)
-        self._last = {'decay': {'tau': tau, 'spread': spread, 'slack': slack,
-                                'n_used': res['n_used'], 'confidence': conf,
-                                'snr': snr, 'plot': plot}}
+        # coerce to native python now (the plot holds numpy arrays); get_status
+        # is polled ~4x/s and re-coercing these on every poll -- including during
+        # the next run's motion -- is needless reactor work
+        self._last = self._native({'decay': {
+            'tau': tau, 'spread': spread, 'slack': slack,
+            'n_used': res['n_used'], 'confidence': conf,
+            'snr': snr, 'plot': plot}})
         gcmd.respond_info("\n".join(lines))

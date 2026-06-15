@@ -122,6 +122,14 @@
   let homed = $derived(status.toolhead?.homed_axes ?? '')
   let homedXYZ = $derived(['x', 'y', 'z'].every((a) => homed.includes(a)))
 
+  // Sweep's PA-gate wobble is a high extrude-ratio move; warn when the
+  // extruder's max_extrude_cross_section (surfaced by autopa) is below the
+  // headroom Sweep needs. Default-Sweep params need ~170 mm²; 200 covers them
+  // with margin. null ⇒ couldn't read it ⇒ warn to be safe.
+  const SWEEP_XSEC_MIN = 200
+  let mecs = $derived(status.autopa?.max_extrude_cross_section)
+  let sweepGuardLow = $derived(mecs == null || mecs < SWEEP_XSEC_MIN)
+
   // Soft, non-blocking position check on the LIVE toolhead position (the purge
   // happens wherever the nozzle currently is — not the move-target inputs). Only
   // one situation is actually risky: far from every edge (no waste bin to catch
@@ -326,6 +334,19 @@
     </button>
   {/each}
 </div>
+
+{#if method === 'sweep' && sweepGuardLow}
+  <p class="sweep-note">
+    <strong>⚠ Sweep needs <code>max_extrude_cross_section</code> raised</strong>
+    {#if mecs != null}(currently <code>{mecs.toFixed(2)}</code> mm²){/if}.
+    Its PA-gate wobble makes a high extrude-ratio move that Klipper blocks by
+    default. Add <code>max_extrude_cross_section: 200</code> (or more) to your
+    <code>[extruder]</code> in <code>printer.cfg</code> and restart — it only
+    relaxes a safety check, not your prints (0 isn't allowed; Klipper requires
+    &gt; 0). The run also aborts up front with the exact value if it's still too
+    low. See <code>CONFIG.md</code>; Decay doesn't need this.
+  </p>
+{/if}
 
 <section class="card">
   <div class="runrow">
@@ -571,6 +592,18 @@
     line-height: 1.45;
   }
   .flow-note strong { color: var(--accent); font-weight: 600; }
+
+  .sweep-note {
+    margin: 0 0 var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--warn) 12%, var(--bg-raised));
+    border-left: 3px solid var(--warn);
+    font-size: 0.85rem;
+    line-height: 1.45;
+  }
+  .sweep-note strong { color: var(--warn); font-weight: 600; }
+  .sweep-note code { font-size: 0.85em; }
 
   .console pre {
     margin: var(--sp-2) 0;

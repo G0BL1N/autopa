@@ -7,7 +7,29 @@
 #
 # AUTOPA_ANNOTATE writes operator labels onto a saved capture; AUTOPA_DELETE
 # removes one. The captures themselves are produced by the decay/sweep methods.
-import os, json
+import os, io, json, zipfile
+
+
+def _rewrite_capture_meta(path, meta):
+    # Replace ONLY the meta member of a capture .npz, copying samples/stats over
+    # verbatim. A capture is a zip whose samples.npy is ~2 MB stored
+    # uncompressed; re-encoding it through numpy on every label edit is what made
+    # batch labelling take tens of seconds (and starve the reactor -> "timer too
+    # close"). Copying the raw zip bytes for everything but meta is a memcpy, so
+    # labelling is now a small-file rewrite. Atomic via temp + os.replace.
+    import numpy as np
+    buf = io.BytesIO()
+    np.save(buf, np.asarray(json.dumps(meta)))     # the meta.npy payload
+    meta_bytes = buf.getvalue()
+    tmp = path + ".tmp"
+    with zipfile.ZipFile(path, 'r') as zin, \
+         zipfile.ZipFile(tmp, 'w', zipfile.ZIP_STORED) as zout:
+        for item in zin.infolist():
+            if item.filename == 'meta.npy':
+                zout.writestr('meta.npy', meta_bytes)
+            else:                                  # samples/stats copied as-is
+                zout.writestr(item, zin.read(item.filename))
+    os.replace(tmp, path)
 
 
 class CaptureMixin:
@@ -28,12 +50,12 @@ class CaptureMixin:
         if not fields:
             raise gcmd.error("autopa annotate: nothing to set; pass one or more "
                              "of MATERIAL BRAND HOTEND NOTES")
-        data = np.load(path, allow_pickle=False)
-        meta = json.loads(str(data['meta']))
-        stats = json.loads(str(data['stats'])) if 'stats' in data.files else {}
+        # np.load is lazy: reading only 'meta' never materialises the big
+        # samples array, and _rewrite_capture_meta copies it across as raw bytes.
+        with np.load(path, allow_pickle=False) as data:
+            meta = json.loads(str(data['meta']))
         meta.update(fields)
-        np.savez(path, samples=data['samples'], meta=json.dumps(meta),
-                 stats=json.dumps(stats))
+        _rewrite_capture_meta(path, meta)
         # keep the cached UI captures index in step with the rewritten labels
         base = os.path.basename(path)
         for entry in self._captures_index:

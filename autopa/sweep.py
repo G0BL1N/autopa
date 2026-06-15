@@ -200,6 +200,7 @@ class SweepMixin:
         self._set_busy('sweep', 0.5 + len(ks) * (tslow + cycles
                        * (tfast + tslow)) + (warmup - 1.) * tslow)
         try:
+            self._save_gcode_state()            # restore coordinate modes after
             toolhead.dwell(0.5)                 # baseline before first burst
             self.gcode.run_script_from_command("G90")   # absolute XYZ
             self.gcode.run_script_from_command("M83")   # relative E
@@ -255,11 +256,20 @@ class SweepMixin:
                         "SET_VELOCITY_LIMIT ACCEL=%.0f" % old_accel)
                 except Exception:
                     logging.exception("autopa sweep: failed to restore accel")
+            try:
+                # restore G90/G91 + M82/M83; MOVE=1 returns the wobble axis to
+                # base (the toggling legs leave it up to `wobble` off), keeping
+                # Klipper's logical position in step with the toolhead. Only when
+                # wobbling -- the pure-E path never moved an axis and may be
+                # un-homed.
+                self._restore_gcode_state(move=wobbling)
+            except Exception:
+                logging.exception("autopa sweep: gcode-state restore failed")
 
         meta = self._base_meta(lc, 'sweep', gcmd)
         meta.update({'slow': slow, 'fast': fast, 'tslow': tslow, 'tfast': tfast,
                      'cycles': cycles, 'orig_pa': orig_pa, 'ks': ks,
-                     'warmup': warmup, 't0': t0, 'errs': errs,
+                     'kstep': kstep, 'warmup': warmup, 't0': t0, 'errs': errs,
                      'wobble': wobble, 'wobble_axis': wobble_axis,
                      'accel': accel, 'apply': apply,
                      'windows': [(a - t0, b - t0) for a, b in windows],
@@ -334,7 +344,7 @@ class SweepMixin:
             # true optimum is probably outside the range -- the valley wasn't
             # bracketed, so K_opt is a clipped boundary, not a real minimum.
             ks = meta['ks']
-            edge = kstep * 0.5
+            edge = meta['kstep'] * 0.5
             if k_opt <= ks[0] + edge:
                 lines.append("  WARNING: K_opt is at the LOW edge of the swept "
                              "range [%.3f, %.3f]; the true optimum may be below "
@@ -364,6 +374,8 @@ class SweepMixin:
             path = self._save_capture(arr, meta, dict(kind='sweep', **result))
             if path:
                 lines.append("capture saved: %s" % path)
-        # per_k is UI-only (kept out of the saved-capture stats, like decay's plot)
-        self._last = {'sweep': dict(result, per_k=self._sweep_per_k(res))}
+        # per_k is UI-only (kept out of the saved-capture stats, like decay's
+        # plot); coerce to native now so get_status isn't re-coercing each poll
+        self._last = self._native(
+            {'sweep': dict(result, per_k=self._sweep_per_k(res))})
         gcmd.respond_info("\n".join(lines))

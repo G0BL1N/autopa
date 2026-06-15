@@ -116,6 +116,21 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         self.gcode.run_script_from_command(
             "SET_PRESSURE_ADVANCE ADVANCE=%.6f" % value)
 
+    # Save/restore the gcode-move state around a calibration so the operator's
+    # coordinate modes survive it: a calibrator flips to absolute XYZ (G90) and
+    # relative E (M83), and RESTORE_GCODE_STATE puts G90/G91 + M82/M83 + feedrate
+    # back the way they were. (Pressure advance is extruder state, not part of
+    # gcode-move state, so each calibrator still restores PA itself.) MOVE=1
+    # returns the toolhead to its saved position -- used by the sweep, whose
+    # axis wobble leaves it a fraction off; the decay never moves XY and is not
+    # always homed, so it restores without a move.
+    def _save_gcode_state(self, name='autopa'):
+        self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=%s" % name)
+
+    def _restore_gcode_state(self, name='autopa', move=False):
+        self.gcode.run_script_from_command(
+            "RESTORE_GCODE_STATE NAME=%s%s" % (name, " MOVE=1" if move else ""))
+
     # -- activity (UI progress) -----------------------------------------------
     # Calibrators queue their whole move sequence ahead of execution, so live
     # per-step progress isn't meaningful; instead each command declares its
@@ -164,6 +179,23 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         sensor = getattr(lc, 'sensor', None)
         return type(sensor).__name__ if sensor is not None else '?'
 
+    def _max_extrude_cross_section(self):
+        # Effective max_extrude_cross_section (mm^2): Klipper stores it as
+        # max_extrude_ratio = cross_section / filament_area and doesn't surface
+        # the original in get_status, so reconstruct it. The UI uses this to show
+        # the Sweep guard warning only when it's actually too low. None if the
+        # extruder can't be read. (Klipper parses the option with above=0, so it
+        # is always > 0 -- there is no "disabled" value; unset == 4*nozzle^2.)
+        try:
+            extruder = self.printer.lookup_object('toolhead').get_extruder()
+            ratio = getattr(extruder, 'max_extrude_ratio', None)
+            area = getattr(extruder, 'filament_area', None)
+            if ratio is not None and area is not None:
+                return ratio * area
+        except Exception:
+            pass
+        return None
+
     def _hotend_status(self):
         # (commanded target, measured temperature) in degC, or (None, None).
         try:
@@ -210,8 +242,14 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
             import time as _t
             path = os.path.join(self.capture_dir,
                                 "capture_%s.npz" % _t.strftime("%Y%m%d-%H%M%S"))
-            np.savez(path, samples=arr,
-                     meta=json.dumps(meta), stats=json.dumps(stats))
+            # write to a temp file and rename so a crash mid-write can't leave a
+            # half-written capture behind (pass a file object so np.savez writes
+            # the exact name, not <name>.npz)
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as fh:
+                np.savez(fh, samples=arr,
+                         meta=json.dumps(meta), stats=json.dumps(stats))
+            os.replace(tmp, path)
             self._captures_index.insert(0, self._capture_summary(path, meta, stats))
             del self._captures_index[self.CAPTURES_INDEX_MAX:]
             return path
@@ -380,6 +418,8 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
                              'has_load_cell': self._load_cell is not None,
                              'load_cell_name': getattr(self._load_cell, 'name',
                                                        None),
+                             'max_extrude_cross_section':
+                                 self._max_extrude_cross_section(),
                              'activity': dict(self._activity,
                                               now=float(eventtime)),
                              'profiles': self._profiles,
