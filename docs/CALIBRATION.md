@@ -132,7 +132,7 @@ paste straight into your slicer's filament start g-code. It can also remember ca
 values per **(material, temperature)** so a re-print never needs re-calibration, and recall
 them automatically from the slicer. The four supported workflows — calibrate every print,
 calibrate only when a value is missing, paste-only, and save + recall — are laid out with
-ready-to-use macros in [`autopa.cfg`](../autopa.cfg).
+ready-to-use macros in [`CONFIG.md`](../CONFIG.md).
 
 Every run is saved as a self-describing `.npz` capture for offline inspection, comparison,
 and regression testing — see [docs/DATA_FORMAT.md](DATA_FORMAT.md).

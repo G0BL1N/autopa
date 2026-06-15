@@ -65,6 +65,8 @@ prints, so a filament is calibrated once rather than every time.
 - A **load cell** — a standalone
   [`[load_cell]`](https://www.klipper3d.org/Config_Reference.html#load_cell) or a
   [`[load_cell_probe]`](https://www.klipper3d.org/Config_Reference.html#load_cell_probe).
+- **numpy** in Klipper's Python venv — `install.sh` installs it for you (stock Klipper does
+  not ship it). See [CONFIG.md](CONFIG.md#requirements) to do it by hand.
 
 If you don't have a printer equipped with a load cell, the most approachable option is the
 *Mellow Fly ALPSv6* (autopa's reference sensor). It can be installed in place of the common
@@ -85,7 +87,7 @@ cd ~/autopa
 ```
 
 Add an `[autopa]` section to `printer.cfg` — options and ready-made workflow macros are in
-**[autopa.cfg](autopa.cfg)** — then restart Klipper so it loads the new extra and config:
+**[CONFIG.md](CONFIG.md)** — then restart Klipper so it loads the new extra and config:
 
 ```bash
 sudo systemctl restart klipper     # a plain RESTART does NOT reload extras
@@ -93,13 +95,17 @@ sudo systemctl restart klipper     # a plain RESTART does NOT reload extras
 
 If you installed the UI, it's now at `http://<printer>/autopa/`.
 
+`install.sh` also registers autopa with **Moonraker's update manager**, so later updates are
+one click in the Fluidd/Mainsail UI (it pulls and restarts Klipper for you). See
+**[CONFIG.md](CONFIG.md#updating)** for the manual path and `--no-moonraker` to skip it.
+
 ## Using it
 
 The methods and interfaces are all equally valid — use whichever fits. The quickest is the
 **web UI**: calibrate and (optionally) store a value in a few clicks, then reuse it. For
 automation, the same flow runs as plain **g-code macros** keyed off your slicer's material +
 temperature — calibrate every print, calibrate only when a value is missing, paste a value
-once, or save and recall. Each is a ready-made macro in **[autopa.cfg](autopa.cfg)**; stored
+once, or save and recall. Each is a ready-made macro in **[CONFIG.md](CONFIG.md)**; stored
 values are keyed per `(material[+brand], temperature)`, so a re-print never re-calibrates.
 
 ## Web UI

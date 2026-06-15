@@ -1,7 +1,7 @@
 # autopa capture data format
 
 Every autopa measurement can be saved as a single `.npz` file (enabled by
-default; see `save_captures` in [`autopa.cfg`](../autopa.cfg)). One file is fully
+default; see `save_captures` in [`CONFIG.md`](../CONFIG.md)). One file is fully
 self-describing — samples *and* metadata travel together — so a capture can be
 replayed offline or added to the baseline library without any companion file.
 
