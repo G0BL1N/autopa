@@ -2,11 +2,13 @@
   <title>autopa</title>
   <!-- single solid panel -->
   <rect x="1" y="1" width="478" height="298" rx="40" fill="#151a21" stroke="#232b36" stroke-width="2"/>
-  <!-- big force-curve wave spanning the full width -->
-  <path d="M52 162 C150 162 116 44 240 44 S330 162 428 162" fill="none"
+  <!-- big force-curve wave; widened so its left/right/top margins match the
+       wordmark's gaps below: every panel margin is a uniform ~34px -->
+  <path d="M44 162 C150 162 116 44 240 44 S330 162 436 162" fill="none"
         stroke="#4cc38a" stroke-width="18" stroke-linecap="round"/>
-  <!-- wordmark, lowercase, monospace, centered under the wave -->
-  <text x="240" y="240" text-anchor="middle" font-size="66" letter-spacing="-1"
+  <!-- wordmark, lowercase, monospace, centered in the band between the wave and
+       the bottom edge (equal gap above and below) -->
+  <text x="240" y="250" text-anchor="middle" font-size="66" letter-spacing="-1"
         font-family="ui-monospace, 'JetBrains Mono', 'Cascadia Code', 'Menlo', monospace"
         fill="#d8dee9">autopa</text>
 </svg>
