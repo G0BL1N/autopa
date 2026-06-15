@@ -26,7 +26,7 @@ from .decay import DecayMixin
 from .sweep import SweepMixin
 from .profiles import ProfileMixin
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 # Bump whenever the saved-capture metadata layout changes incompatibly; readers can
 # branch on meta['schema_version'] (absent => pre-v1 development capture).
 SCHEMA_VERSION = 1
