@@ -27,8 +27,8 @@ recall it instead of re-measuring.
 
 > ⚠️ **Status: experimental.** autopa works and is in active use on the author's machine, but
 > it's still young and actively being validated — interfaces, config, and the saved-capture
-> format may still change. The **Sweep** method is the recommended path, with **Decay** as a
-> faster alternative. Expect some rough edges.
+> format may still change. The **Sweep** method is the recommended path; **Decay** is a faster,
+> experimental alternative. Expect some rough edges.
 
 ## What it's for
 
@@ -52,7 +52,7 @@ and reports the optimal pressure advance. Two methods are available:
 - **Sweep** *(recommended)* — sweeps PA across a grid with a slow/fast square-wave and picks
   the value with the cleanest force step-response. Ported from
   [PrusaPATuner](https://github.com/CNCKitchen/PrusaPATuner).
-- **Decay** — measures the melt-pressure relaxation time after the filament
+- **Decay** *(experimental)* — measures the melt-pressure relaxation time after the filament
   stops; that time constant is the optimal PA.
 
 Both methods are explained in **[docs/CALIBRATION.md](docs/CALIBRATION.md)**.

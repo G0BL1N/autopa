@@ -86,7 +86,7 @@ AUTOPA_APPLY MATERIAL=PLA TEMP=220 ELSE=AUTOPA_CALIBRATE
 [gcode_macro AUTOPA_CALIBRATE]
 gcode:
     G1 X.. Y.. F6000                              ; move to a bin / safe spot
-    AUTOPA_SWEEP                                  ; or AUTOPA_DECAY (your method)
+    AUTOPA_SWEEP                                  ; or AUTOPA_DECAY (experimental)
     # ... your nozzle wipe / purge here ...
     AUTOPA_SET MATERIAL={params.MATERIAL} TEMP={params.TEMP} PA={printer.extruder.pressure_advance}
 ```
@@ -107,7 +107,7 @@ The method and tuning of `AUTOPA_SWEEP` / `AUTOPA_DECAY` are documented in
 | command | what it does |
 | --- | --- |
 | `AUTOPA_SWEEP` | calibrate by sweeping K (recommended); applies live + prints a paste line |
-| `AUTOPA_DECAY` | calibrate from post-stop melt decay; applies live + prints a paste line |
+| `AUTOPA_DECAY` | calibrate from post-stop melt decay (experimental); applies live + prints a paste line |
 | `AUTOPA_APPLY MATERIAL= TEMP= [BRAND=] [ELSE=]` | recall and apply a stored profile (or run `ELSE` on a miss) |
 | `AUTOPA_SET MATERIAL= TEMP= PA= [BRAND=]` | store a PA value |
 | `AUTOPA_FORGET MATERIAL= TEMP= [BRAND=]` | delete a stored profile |

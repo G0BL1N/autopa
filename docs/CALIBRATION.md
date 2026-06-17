@@ -11,7 +11,7 @@ paste-able `SET_PRESSURE_ADVANCE` line → save the raw capture):
 | Method | Command | Status | What it measures |
 |--------|---------|--------|------------------|
 | **Sweep** | `AUTOPA_SWEEP` | Ready | How cleanly the extruder force tracks a velocity step across a range of PA values |
-| **Decay** | `AUTOPA_DECAY` | Ready | The melt-pressure relaxation time after the filament stops |
+| **Decay** | `AUTOPA_DECAY` | Experimental | The melt-pressure relaxation time after the filament stops |
 
 You pick the method yourself — in the UI, or by naming the command in your own macro. It
 never chooses for you. Both apply the result live by default (`APPLY=0` to measure without
@@ -88,7 +88,7 @@ integral fit confidently reports a badly wrong value. Rather than surface three 
 ask the operator to referee, autopa ships the one that holds up. (The raw capture is always
 saved, so other estimators can still be explored offline.)
 
-## Decay (alternative)
+## Decay (experimental)
 
 **The idea.** Klipper models nozzle pressure as a first-order system with a single time
 constant. Right after extrusion stops, the residual pressure bleeds out through the nozzle
@@ -98,10 +98,12 @@ sweep and no model of corner behaviour. Decay primes the melt, then at PA = 0 it
 short pulse-and-stop many times, folds (synchronously averages) the post-stop decay windows
 together to beat the noise floor, fits τ on each pulse, and takes a robust median.
 
-**Status.** Decay is autopa's own method and stands as a full alternative to Sweep — at the
-default settings the two agree across PLA and PETG and across temperature (when the hotend
-gets hotter, both report a lower value together), good evidence it measures real melt physics.
-It's faster than Sweep; pick whichever fits your workflow.
+**Status: experimental.** Decay is autopa's own method and it's faster than Sweep. The
+underlying physics is sound — at the default settings the two have agreed across PLA and PETG
+and across temperature (when the hotend gets hotter, both report a lower value together). But
+the estimator is still under active development and validation, so its behaviour and results
+can change between versions. Treat Decay as experimental, and reach for **Sweep** when you
+want a result to rely on.
 
 **Why the defaults are what they are.** Decay's τ is only equal to the pressure-advance value
 when the measurement *excites the melt like a print does* — a short, fast flow step. A real

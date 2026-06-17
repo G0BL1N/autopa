@@ -42,10 +42,10 @@
     },
     decay: {
       label: 'Decay',
-      tags: ['fast', 'alternative'],
+      tags: ['fast', 'experimental'],
       desc: "Pulse-and-stop melt relaxation: fits the post-stop force decay; "
           + 'τ is the optimal pressure advance. autopa\'s own method — faster '
-          + 'than Sweep and, at the default settings, just as well tested.',
+          + 'than Sweep, but experimental.',
       params: [
         { k: 'FLOW', def: 18, hint: 'flow (mm³/s)', tier: 'common', vol: true },
         { k: 'PULSE', def: 2, hint: 'filament per pulse (mm)', tier: 'common' },
@@ -328,7 +328,7 @@
             onclick={() => (method = id)} disabled={running}>
       <span class="mlabel">{m.label}</span>
       <span class="tags">
-        {#each m.tags as t}<span class="tag" class:warn-t={t === 'needs tuning'}>{t}</span>{/each}
+        {#each m.tags as t}<span class="tag" class:warn-t={t === 'experimental'}>{t}</span>{/each}
       </span>
       <span class="mdesc dim">{m.desc}</span>
     </button>

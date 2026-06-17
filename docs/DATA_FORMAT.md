@@ -12,7 +12,7 @@ The `kind` field records which command produced the capture:
 | `kind`    | command          | what it does |
 |-----------|------------------|--------------|
 | `sweep`   | `AUTOPA_SWEEP`   | K-sweep force-tracking estimator (numpy port of PrusaPATuner). Drives a slow/fast extrusion square wave across a grid of PA values and finds the K that best tracks commanded flow. The recommended calibration path. |
-| `decay`   | `AUTOPA_DECAY`   | Pulse-and-stop melt-relaxation estimator. Fits the post-stop force decay `~exp(-t/tau)`; `tau` is the optimal pressure-advance estimate. |
+| `decay`   | `AUTOPA_DECAY`   | Pulse-and-stop melt-relaxation estimator (experimental). Fits the post-stop force decay `~exp(-t/tau)`; `tau` is the optimal pressure-advance estimate. |
 
 ## File layout
 

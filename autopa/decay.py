@@ -22,7 +22,8 @@ class DecayMixin:
 
     cmd_AUTOPA_DECAY_help = (
         "Calibrate pressure advance from post-stop melt-force decay (autopa's "
-        "own method). Pulse+stop at PA=0, fit the melt time-constant tau "
+        "own method; EXPERIMENTAL). Pulse+stop at PA=0, fit the melt "
+        "time-constant tau "
         "(= optimal PA), robust-median over pulses. Reports tau, applies it "
         "live (APPLY=0 to skip), and prints a paste-able SET_PRESSURE_ADVANCE "
         "line. Args: FLOW PULSE OFF PULSES PA PRIME WARMUP WINDOW SNRMIN "
