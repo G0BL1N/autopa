@@ -423,7 +423,7 @@
 
 <details class="card" bind:open={liveOpen}>
   <summary>live force</summary>
-  <LiveChart />
+  <LiveChart active={liveOpen} />
 </details>
 
 <details class="card console">

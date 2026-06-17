@@ -196,6 +196,12 @@ class SweepMixin:
                 self.gcode.run_script_from_command(
                     "G1 E%.4f F%.0f" % (e_amt, (e_amt / dur) * 60.))
 
+        # Collect garbage now, while the toolhead is still idle, so a full GC
+        # pass doesn't fall in the middle of the timed leg sequence below (a GC
+        # pause on the reactor thread starves the MCU step queue -> "Timer too
+        # close"). A sweep collects a large sample array over its whole span.
+        import gc
+        gc.collect()
         # whole queued sequence: baseline dwell + per-K legs + warmup extra
         self._set_busy('sweep', 0.5 + len(ks) * (tslow + cycles
                        * (tfast + tslow)) + (warmup - 1.) * tslow)
@@ -246,6 +252,15 @@ class SweepMixin:
             samples, errs = collector.collect_until(t_end)
         finally:
             self._clear_busy()
+            # Release the load-cell collector even if the sweep aborts before
+            # collect_until returns: a collector left "started" stays subscribed
+            # and buffers every sample forever (reactor load that builds across
+            # runs -> "Timer too close"). collect_until clears is_started on the
+            # normal path; this is the abort guard.
+            try:
+                collector.is_started = False
+            except Exception:
+                logging.exception("autopa sweep: collector release failed")
             try:
                 self._set_pa(orig_pa)             # always restore PA
             except Exception:
@@ -378,4 +393,5 @@ class SweepMixin:
         # plot); coerce to native now so get_status isn't re-coercing each poll
         self._last = self._native(
             {'sweep': dict(result, per_k=self._sweep_per_k(res))})
+        self._invalidate_status()
         gcmd.respond_info("\n".join(lines))

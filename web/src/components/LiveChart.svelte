@@ -1,8 +1,14 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { makeChart } from '../lib/chart.js'
-  import { subscribeForce } from '../lib/bridge.js'
+  import { subscribeForce, stopForce } from '../lib/bridge.js'
   import { conn, status } from '../lib/stores.svelte.js'
+
+  // Stream only while the live panel is actually open. The force dump is a
+  // continuous firehose; left running while nobody watches it loads the Klippy
+  // reactor needlessly (a contributor to "Timer too close"). The parent passes
+  // active=true only while the <details> panel is open.
+  let { active = false } = $props()
 
   const WINDOW_S = 15
   const MIN_SPAN_G = 25 // don't let the y-axis zoom tighter than this (grams)
@@ -84,16 +90,23 @@
     render()
   })
 
-  // (Re)subscribe whenever the bridge is up and the mux key is known —
-  // a bridge reconnect drops all dump subscriptions.
+  // Subscribe while the panel is open and the bridge is up; tear the stream
+  // down (recycle the socket) when the panel closes. A bridge reconnect drops
+  // all dump subscriptions, so re-subscribe when it returns.
   let subscribed = $state(false)
   $effect(() => {
     const name = status.autopa?.load_cell_name
-    if (conn.bridge && name && !subscribed) {
+    if (conn.bridge && name && active && !subscribed) {
       subscribed = true
       subscribeForce(name, onBatch).catch(() => (subscribed = false))
+    } else if (subscribed && (!active || !conn.bridge)) {
+      subscribed = false
+      if (!active) stopForce() // panel closed -> stop the firehose at the source
     }
-    if (!conn.bridge) subscribed = false
+  })
+  // leaving the view entirely (tab change) also stops the stream
+  onDestroy(() => {
+    if (subscribed) stopForce()
   })
 
   onMount(() => {

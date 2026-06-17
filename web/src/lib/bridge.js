@@ -39,6 +39,18 @@ export function subscribeForce(loadCell, cb) {
   })
 }
 
+// Stop all force streaming. Klipper streams a dump_force subscription until the
+// API connection closes (there is no per-stream "unsubscribe"), so the only way
+// to stop the firehose when nobody is watching is to recycle the socket: it
+// auto-reconnects clean (no streams) and re-subscribes on demand. Leaving the
+// stream running pushes every load-cell sample over the bridge continuously —
+// steady reactor/output load that contributed to "Timer too close".
+export function stopForce() {
+  subs.clear()
+  if (ws && ws.readyState !== WebSocket.CLOSING && ws.readyState !== WebSocket.CLOSED)
+    ws.close()
+}
+
 export function fetchCaptureDetail(capture) {
   return bridgeCall('autopa/capture_detail', { capture })
 }

@@ -65,6 +65,7 @@ class ProfileMixin:
                                'updated': _t.strftime("%Y-%m-%d %H:%M:%S"),
                                'source': 'manual'}
         self._save_profiles()
+        self._invalidate_status()
         gcmd.respond_info("autopa: stored %s -> PA %.4f" % (key, pa))
 
     cmd_AUTOPA_APPLY_help = ("Apply a stored pressure-advance value: "
@@ -110,6 +111,7 @@ class ProfileMixin:
         if self._profiles.pop(key, None) is None:
             raise gcmd.error("autopa: no profile for %s" % key)
         self._save_profiles()
+        self._invalidate_status()
         gcmd.respond_info("autopa: forgot %s" % key)
 
     cmd_AUTOPA_LIST_help = "List stored pressure-advance profiles"

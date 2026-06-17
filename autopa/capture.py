@@ -61,6 +61,7 @@ class CaptureMixin:
         for entry in self._captures_index:
             if entry.get('file') == base:
                 entry.update(fields)
+                self._invalidate_status()
                 break
         gcmd.respond_info("autopa: annotated %s -> %s" % (
             os.path.basename(path),
@@ -76,4 +77,5 @@ class CaptureMixin:
         base = os.path.basename(path)
         self._captures_index = [e for e in self._captures_index
                             if e.get('file') != base]
+        self._invalidate_status()
         gcmd.respond_info("autopa: deleted %s" % base)

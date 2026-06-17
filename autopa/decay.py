@@ -94,6 +94,7 @@ class DecayMixin:
         import numpy as np
         orig_pa = self._get_pa()
         stops = []
+        collector = None
         self._save_gcode_state()        # restore G90/G91 + M82/M83 afterwards
         try:
             self._set_pa(p['pa'])
@@ -123,6 +124,16 @@ class DecayMixin:
             t_end = toolhead.get_last_move_time()
             samples, errs = collector.collect_until(t_end)
         finally:
+            # Release the load-cell collector even if the run aborts before
+            # collect_until returns: a collector left "started" stays subscribed
+            # and buffers every sample forever (reactor load that builds across
+            # runs -> "Timer too close"). collect_until clears is_started on the
+            # normal path; this is the abort guard.
+            if collector is not None:
+                try:
+                    collector.is_started = False
+                except Exception:
+                    logging.exception("autopa decay: collector release failed")
             try:
                 self._set_pa(orig_pa)
             except Exception:
@@ -146,6 +157,12 @@ class DecayMixin:
         toolhead = self.printer.lookup_object('toolhead')
         self._check_extrude_temp(gcmd)
         p = self._decay_params(gcmd)
+        # Collect garbage now, while the toolhead is still idle, so a full GC
+        # pass doesn't fall in the middle of the timed pulse train below (a GC
+        # pause on the reactor thread starves the MCU step queue -> "Timer too
+        # close"). The measured run allocates a large sample array.
+        import gc
+        gc.collect()
         self._set_busy('decay', self._decay_expected_s(p))
         try:
             arr, meta = self._capture_decay(lc, toolhead, p, gcmd)
@@ -300,4 +317,5 @@ class DecayMixin:
             'tau': tau, 'spread': spread, 'slack': slack,
             'n_used': res['n_used'], 'confidence': conf,
             'snr': snr, 'plot': plot}})
+        self._invalidate_status()
         gcmd.respond_info("\n".join(lines))

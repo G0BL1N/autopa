@@ -53,6 +53,14 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         self._last = {}
         self._activity = {'state': 'idle'}
         self._captures_index = []
+        # get_status is polled ~4x/s; the heavy, slowly-changing fields
+        # (captures index, last-run result incl. plot arrays, profiles) are
+        # coerced to native once and cached, rebuilt only when they change (see
+        # _invalidate_status / get_status). Re-walking them every poll churned
+        # allocations on the reactor thread, feeding GC pauses that can stall
+        # step generation during a concurrent run ("Timer too close").
+        self._status_cached = {}
+        self._status_dirty = True
         # The load cell built by [load_cell_probe] is private to the probe and
         # not registered as its own object, so resolve it on ready and also
         # capture it from the events load_cell fires with the instance.
@@ -252,6 +260,7 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
             os.replace(tmp, path)
             self._captures_index.insert(0, self._capture_summary(path, meta, stats))
             del self._captures_index[self.CAPTURES_INDEX_MAX:]
+            self._invalidate_status()
             return path
         except Exception:
             logging.exception("autopa: failed to save capture")
@@ -329,6 +338,7 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
             except Exception:
                 logging.exception("autopa: skipping unreadable capture %s" % path)
         self._captures_index = index
+        self._invalidate_status()
 
     # -- capture detail endpoint (UI capture inspection) ----------------------
     @staticmethod
@@ -411,20 +421,31 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
             return obj.tolist()
         return obj
 
+    def _invalidate_status(self):
+        # Mark the cached get_status payload stale after mutating profiles, the
+        # captures index, or the last-run result, so the next poll rebuilds it.
+        self._status_dirty = True
+
     def get_status(self, eventtime):
         # 'now' shares _set_busy's clock so the UI can compute elapsed time
         # without syncing to the host; load_cell_name is the dump_force mux key.
-        return self._native({'version': __version__,
-                             'has_load_cell': self._load_cell is not None,
-                             'load_cell_name': getattr(self._load_cell, 'name',
-                                                       None),
-                             'max_extrude_cross_section':
-                                 self._max_extrude_cross_section(),
-                             'activity': dict(self._activity,
-                                              now=float(eventtime)),
-                             'profiles': self._profiles,
-                             'captures': self._captures_index,
-                             'last': self._last})
+        # The captures/last/profiles block changes only on a run or edit, so
+        # coerce it to native once per change instead of on every ~4 Hz poll
+        # (see __init__ for why -- avoids reactor-thread allocation churn).
+        if self._status_dirty:
+            self._status_cached = self._native({'profiles': self._profiles,
+                                                 'captures': self._captures_index,
+                                                 'last': self._last})
+            self._status_dirty = False
+        # Only the small, always-changing scalars are rebuilt per poll; the
+        # cached block is shared by reference (a fresh outer dict each call keeps
+        # Klipper's subscription diffing correct for the scalars).
+        return dict(self._status_cached,
+                    version=__version__,
+                    has_load_cell=self._load_cell is not None,
+                    load_cell_name=getattr(self._load_cell, 'name', None),
+                    max_extrude_cross_section=self._max_extrude_cross_section(),
+                    activity=dict(self._activity, now=float(eventtime)))
 
 
 def load_config(config):
