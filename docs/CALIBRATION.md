@@ -49,21 +49,22 @@ Useful parameters (all optional; defaults in parentheses):
 | Param | Default | Meaning |
 |-------|---------|---------|
 | `KSTART` / `KEND` / `KSTEP` | `0.01` / `0.08` / `0.01` | PA grid to sweep (brackets common PLA/PETG; the report warns if the optimum lands on an edge — widen the range and re-run) |
-| `SLOW` / `FAST` | `0.83` / `7.5` mm/s | slow- and fast-leg filament feed (≈ **2 / 18 mm³/s** for 1.75 mm filament — the web UI takes these as volumetric mm³/s) |
+| `VFR` / `VFR_LOW` | `18` / `2` mm³/s | fast (calibration) and slow (baseline) leg **volumetric flow rate**; the firmware converts to the linear feed using your real `filament_area`. `VFR_LOW` is an independent low baseline (not a ratio of `VFR`) — keep it low so each fast leg is a clean step up |
 | `TSLOW` / `TFAST` | `1.0` / `0.25` s | duration of each leg |
 | `CYCLES` | `8` | square-wave cycles measured per `K` |
+| `PRIME` / `RETRACT` | `20` / `6` mm | bulk melt prime before the sweep; retract after, so the run leaves no oozing blob |
 | `WOBBLEAXIS` / `WOBBLE` | `Y` / `0.05` mm | axis nudge that arms the PA gate |
 | `ACCEL` | `1000` mm/s² | acceleration for the wobble move |
 | `MAXFILAMENT` | `400` mm | safety cap on total filament used |
 | `APPLY` | `1` | apply the found `K` live; `APPLY=0` to only measure |
 
-> **Reading flow in mm³/s.** The web UI enters `SLOW`/`FAST` (and Decay's `FLOW`) as
-> *volumetric* flow, which is how slicers think — `volumetric = line width × layer height ×
-> print speed`. For a 0.4 × 0.2 mm line that's ≈ 0.4 mm³/s at 5 mm/s (slow detail), ≈ 6 mm³/s
-> at 80 mm/s, ≈ 16 mm³/s at 200 mm/s. Most stock hotends top out around 10–15 mm³/s and
-> high-flow ones around 25–30, so the `2 → 18` slow/fast span deliberately reaches from slow
-> detail flow up to a strong fast step. (The g-code commands themselves still take mm/s
-> filament feed; the UI just converts, assuming 1.75 mm filament.)
+> **Reading flow in mm³/s.** `VFR`/`VFR_LOW` (and Decay's `VFR`) are *volumetric* flow,
+> which is how slicers think — `volumetric = line width × layer height × print speed`. For a
+> 0.4 × 0.2 mm line that's ≈ 0.4 mm³/s at 5 mm/s (slow detail), ≈ 6 mm³/s at 80 mm/s,
+> ≈ 16 mm³/s at 200 mm/s. Most stock hotends top out around 10–15 mm³/s and high-flow ones
+> around 25–30, so the `2 → 18` slow/fast span deliberately reaches from slow detail flow up
+> to a strong fast step. The firmware converts mm³/s to the linear filament feed using your
+> printer's real `filament_area` (so 2.85 mm setups work too).
 
 ### Where Sweep comes from
 
@@ -108,11 +109,11 @@ want a result to rely on.
 **Why the defaults are what they are.** Decay's τ is only equal to the pressure-advance value
 when the measurement *excites the melt like a print does* — a short, fast flow step. A real
 extruder isn't a perfect first-order system: on top of the fast, PA-relevant melt relaxation
-there's a slow ooze/compliance tail, and a **longer** extrusion (lower `FLOW` or longer
-`PULSE`) over-excites that slow tail and inflates τ. So the result depends on *extrusion
-duration* (`PULSE ÷ FLOW`), and the canonical short pulse — `FLOW` 7.5 mm/s (≈ 18 mm³/s),
-`PULSE` 2 mm (≈ 0.27 s) — is the point where τ matches Sweep. Treat `FLOW`/`PULSE` as a fixed, standardized
-protocol (like quoting viscosity at a defined shear rate), not free knobs.
+there's a slow ooze/compliance tail, and a **longer** extrusion (lower `VFR` or longer
+`PULSE`) over-excites that slow tail and inflates τ. So the result depends on *excitation
+duration* — but `PULSE` auto-scales with the flow to hold it fixed (≈ 0.27 s) as you change
+`VFR`, so the protocol stays standardized (like quoting viscosity at a defined shear rate)
+without manual co-tuning. The canonical operating point is `VFR` 18 mm³/s.
 
 **Command.**
 
@@ -120,12 +121,12 @@ protocol (like quoting viscosity at a defined shear rate), not free knobs.
 AUTOPA_DECAY           ; park the toolhead first, hotend at temperature
 ```
 
-Useful parameters (defaults in parentheses): `FLOW` (7.5 mm/s prime+pulse feed ≈ 18 mm³/s,
-shown volumetrically in the web UI), `PULSE`
-(2 mm per pulse), `OFF` (0.5 s stop dwell), `PULSES` (20), `PRIME` (20 mm continuous bulk
-prime), `WARMUP` (10 unrecorded pulses at the measurement cadence — together with `PRIME`
-they put the first measured pulse in the pulsed steady state), `WINDOW` (0.14 s decay-fit
-cutoff), `MAXFILAMENT` (250 mm), `APPLY` (`1`).
+Useful parameters (defaults in parentheses): `VFR` (18 mm³/s volumetric flow), `PULSE`
+(auto ≈ 2 mm per pulse, scaled with the flow to hold the excitation duration), `OFF` (0.5 s
+stop dwell), `PULSES` (20), `PRIME` (20 mm continuous bulk prime), `RETRACT` (6 mm end
+retract so the run leaves no oozing blob), `WARMUP` (10 unrecorded pulses at the measurement
+cadence — together with `PRIME` they put the first measured pulse in the pulsed steady
+state), `WINDOW` (0.14 s decay-fit cutoff), `MAXFILAMENT` (250 mm), `APPLY` (`1`).
 
 ## Applying and storing results
 

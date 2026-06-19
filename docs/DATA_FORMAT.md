@@ -44,8 +44,11 @@ The printer knows these, so they're recorded with no operator input:
 | `hotend_target`  | commanded hotend temperature (°C) at capture |
 | `hotend_temp`    | *measured* hotend temperature (°C) at capture |
 
-Plus per-`kind` timing and command parameters (e.g. decay's `flow`/`pulse`/
-`pulses`/`stops`, sweep's `ks`/`windows`/`transitions`).
+Plus per-`kind` timing and command parameters. Flows are stored **volumetrically**
+(mm³/s): decay's `vfr`/`excitation_s`/`pulse`/`pulses`/`stops`, sweep's
+`vfr`/`vfr_low`/`ks`/`windows`/`transitions`. The linear filament feed (mm/s) is not
+stored — `filament_area` (in every capture) re-derives it. (Captures from earlier
+builds may instead carry a linear `flow`/`slow`/`fast`; the readers handle both.)
 
 ### Operator-supplied — optional, fill in any time
 

@@ -168,7 +168,8 @@
             <th><input type="checkbox" title="select all"
                        checked={allSelected} onchange={toggleAll} /></th>
             <th>when</th><th>kind</th><th>result</th>
-            <th>material</th><th>temp</th><th>notes</th></tr>
+            <th>material</th><th>temp</th>
+            <th title="volumetric flow (mm³/s)">VFR</th><th>notes</th></tr>
         </thead>
         <tbody>
           {#each captures as r (r.file)}
@@ -187,6 +188,7 @@
               <td class="num">{fmtResult(r)}</td>
               <td>{fmtMaterial(r)}</td>
               <td class="num">{r.hotend_target != null ? `${Math.round(r.hotend_target)}°` : '—'}</td>
+              <td class="num">{r.vfr != null ? r.vfr.toFixed(1) : '—'}</td>
               <td class="dim notes">{r.notes ?? ''}</td>
             </tr>
           {/each}

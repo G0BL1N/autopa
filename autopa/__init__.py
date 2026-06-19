@@ -19,7 +19,7 @@
 # Each mixin owns its own commands and registers them from __init__ via a
 # _register_*_commands hook, so adding a new algorithm is "add a module +
 # a mixin + one register call" with no churn to the others.
-import os, json, logging
+import os, json, logging, math
 
 from .capture import CaptureMixin
 from .decay import DecayMixin
@@ -29,7 +29,28 @@ from .profiles import ProfileMixin
 __version__ = "0.1.1"
 # Bump whenever the saved-capture metadata layout changes incompatibly; readers can
 # branch on meta['schema_version'] (absent => pre-v1 development capture).
-SCHEMA_VERSION = 1
+#   v2: VFR-native flow schema -- 'vfr'(/excitation_s) on decay, 'vfr'/'vfr_low'
+#       on sweep (all mm^3/s), plus filament_area; the linear mm/s feeds are NOT
+#       stored (a runtime detail; filament_area re-derives them). Also embeds a
+#       precomputed 'detail' npz member (decimated trace + plot) so capture_detail
+#       needn't replay the estimator on the reactor. (Captures saved by earlier v2
+#       builds carry slow/fast or vfr_slow/vfr_fast; _sweep_lin reads those too.)
+SCHEMA_VERSION = 2
+
+# Version of the precomputed capture 'detail' payload (decimated trace + plot).
+# SEPARATE from SCHEMA_VERSION because the *code* that produces detail can change
+# without the on-disk layout changing: bump this whenever _capture_detail_payload
+# would produce a DIFFERENT result for the same samples -- estimator math
+# (_estimate_decay / _sweep_analyse), the plot/trace shape, or the decimation.
+# _handle_capture_detail recomputes from the (always-retained) samples whenever a
+# capture's stored detail version != this, so a stale cache is never served.
+DETAIL_VERSION = 1
+
+# Fallback filament cross-section (mm^2) for the vol<->lin conversion when the
+# extruder can't be read; 1.75 mm is the common default. The live value comes
+# from Klipper's extruder.filament_area (see _filament_area), which is the
+# single source of truth so 2.85 mm setups convert correctly.
+_DEFAULT_FILAMENT_AREA = math.pi * (1.75 / 2) ** 2
 
 
 class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
@@ -204,6 +225,32 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
             pass
         return None
 
+    def _filament_area(self):
+        # Single source of truth for the volumetric<->linear filament conversion.
+        # Klipper derives filament_area from the [extruder] filament_diameter, so
+        # using it makes a VFR (mm^3/s) map to the linear feed (mm/s) actually
+        # commanded even on 2.85 mm setups. Falls back to 1.75 mm if the extruder
+        # can't be read (e.g. early/un-homed calls). Returns mm^2.
+        try:
+            area = getattr(
+                self.printer.lookup_object('toolhead').get_extruder(),
+                'filament_area', None)
+            if area:
+                return float(area)
+        except Exception:
+            pass
+        return _DEFAULT_FILAMENT_AREA
+
+    def _lin_to_vol(self, mm_s):
+        # filament feed (mm/s) -> volumetric flow (mm^3/s)
+        return float(mm_s) * self._filament_area()
+
+    def _vol_to_lin(self, mm3_s):
+        # volumetric flow (mm^3/s, the print-relevant VFR the user sets) ->
+        # linear filament feed (mm/s) for the G1 E moves. Inverse of
+        # _lin_to_vol, same single source of truth (_filament_area).
+        return float(mm3_s) / self._filament_area()
+
     def _hotend_status(self):
         # (commanded target, measured temperature) in degC, or (None, None).
         try:
@@ -233,7 +280,8 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
                 'klipper_version': self._software_version(), 'kind': kind,
                 'sensor': self._sensor_type(lc),
                 'sps': lc.sensor.get_samples_per_second(),
-                'hotend_target': target, 'hotend_temp': temp}
+                'hotend_target': target, 'hotend_temp': temp,
+                'filament_area': self._filament_area()}
         # Operator labels are off the calibration surface; store None
         # placeholders so the schema is stable and AUTOPA_ANNOTATE can fill
         # them in later. The hotend defaults from config (hardware is static).
@@ -242,7 +290,46 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         return meta
 
     # -- capture persistence --------------------------------------------------
-    def _save_capture(self, arr, meta, stats):
+    # -- off-reactor analysis/capture ----------------------------------------
+    # The post-run estimator replay and capture write are hundreds of ms to
+    # several seconds on an SBC host. Run synchronously on the reactor they
+    # block the event loop for that whole span, which starves whatever MCU
+    # timer next comes due -- crucially the hotend's soft-PWM queue_digital_out,
+    # which must be refed continuously whether or not the toolhead is moving --
+    # so the MCU shuts down with "Timer too close". The fix is structural, not a
+    # matter of doing the work when "idle": the reactor must never block, so the
+    # heavy work is offloaded UNCONDITIONALLY (no toolhead-idle gate, which was
+    # both ineffective -- the heater starves at standstill too -- and racy).
+    def _run_off_reactor(self, fn, *args):
+        # Run fn(*args) on a worker thread and park the calling gcode greenlet
+        # on a reactor completion: the reactor keeps looping (heater PWM, clock
+        # sync, get_status all serviced on time) until the worker finishes.
+        # numpy ops and file writes release the GIL, so the worker makes real
+        # progress while the reactor runs. fn MUST be reactor-free -- pure
+        # compute + file I/O over immutable inputs; anything touching
+        # printer/gcode/shared state stays on the reactor, after this returns.
+        import threading
+        comp = self.reactor.completion()
+        def worker():
+            try:
+                res = (None, fn(*args))
+            except BaseException as e:        # deliver any failure to the waiter
+                res = (e, None)
+            self.reactor.async_complete(comp, res)
+        threading.Thread(target=worker, name='autopa-offload',
+                         daemon=True).start()
+        err, out = comp.wait()
+        if err is not None:
+            raise err
+        return out
+
+    def _write_capture(self, arr, meta, stats):
+        # Pure capture write (no shared-state access) -- runs on the offload
+        # worker. Precompute the UI detail payload (decimated trace + plot) and
+        # embed it so capture_detail never replays the estimator on the reactor
+        # (see _capture_detail_payload). Returns (path, summary) or None; the
+        # caller records the summary into the index via _register_capture on the
+        # reactor.
         import numpy as np
         try:
             if not os.path.exists(self.capture_dir):
@@ -250,21 +337,37 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
             import time as _t
             path = os.path.join(self.capture_dir,
                                 "capture_%s.npz" % _t.strftime("%Y%m%d-%H%M%S"))
+            try:
+                detail = json.dumps(self._capture_detail_payload(arr, meta))
+            except Exception:
+                logging.exception("autopa: failed to precompute capture detail")
+                detail = None
             # write to a temp file and rename so a crash mid-write can't leave a
             # half-written capture behind (pass a file object so np.savez writes
             # the exact name, not <name>.npz)
             tmp = path + ".tmp"
+            kw = dict(samples=arr, meta=json.dumps(meta), stats=json.dumps(stats))
+            if detail is not None:
+                kw['detail'] = detail
             with open(tmp, "wb") as fh:
-                np.savez(fh, samples=arr,
-                         meta=json.dumps(meta), stats=json.dumps(stats))
+                np.savez(fh, **kw)
             os.replace(tmp, path)
-            self._captures_index.insert(0, self._capture_summary(path, meta, stats))
-            del self._captures_index[self.CAPTURES_INDEX_MAX:]
-            self._invalidate_status()
-            return path
+            return path, self._capture_summary(path, meta, stats)
         except Exception:
             logging.exception("autopa: failed to save capture")
             return None
+
+    def _register_capture(self, saved):
+        # Reactor-side half of a capture save: record the summary produced off
+        # the reactor by _write_capture into the in-memory index. Returns the
+        # saved path (or None).
+        if not saved:
+            return None
+        path, summary = saved
+        self._captures_index.insert(0, summary)
+        del self._captures_index[self.CAPTURES_INDEX_MAX:]
+        self._invalidate_status()
+        return path
 
     def _find_capture(self, capture):
         # Map a capture reference to a saved .npz path: 'latest' (or empty)
@@ -292,7 +395,7 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
 
     # -- captures index (UI capture browser) ----------------------------------
     # Scalar per-capture summaries only -- get_status is polled ~4x/s, so the
-    # index is cached: built once on ready, then maintained by _save_capture
+    # index is cached: built once on ready, then maintained by _register_capture
     # and AUTOPA_ANNOTATE. Full traces/plots come from the capture_detail
     # endpoint.
     CAPTURES_INDEX_MAX = 50
@@ -315,11 +418,26 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
                   'sweep': stats.get('k_opt')}.get(kind)
         if result is not None and result != result:    # NaN -> JSON-safe
             result = None
+        # VFR (mm^3/s): decay uses its single 'vfr'; sweep reports the fast/
+        # calibration leg ('vfr'). Older captures carry vfr_fast or a linear feed
+        # (flow/fast mm/s) -- derive mm^3/s from filament_area when needed.
+        area = meta.get('filament_area')
+        if kind == 'decay':
+            vfr = meta.get('vfr')
+            if vfr is None and meta.get('flow') is not None and area:
+                vfr = meta['flow'] * area
+        elif kind == 'sweep':
+            vfr = meta.get('vfr', meta.get('vfr_fast'))
+            if vfr is None and meta.get('fast') is not None and area:
+                vfr = meta['fast'] * area
+        else:
+            vfr = None
         return {'file': os.path.basename(path), 'kind': kind,
                 'time': AutoPA._capture_time(path),
                 'material': meta.get('material'), 'brand': meta.get('brand'),
                 'hotend': meta.get('hotend'), 'notes': meta.get('notes'),
                 'hotend_target': meta.get('hotend_target'),
+                'vfr': float(vfr) if vfr is not None else None,
                 'result': result, 'confidence': stats.get('conf')}
 
     def _refresh_captures_index(self, eventtime=None):
@@ -358,12 +476,46 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         keep = sorted(set(keep))
         return t[keep], y[keep]
 
+    def _capture_detail_payload(self, arr, meta):
+        # The UI capture view's heavy parts: a decimated raw force trace plus the
+        # kind-specific plot data, produced by replaying the saved samples
+        # through the SAME estimator that produced the capture. Computed once at
+        # save time (toolhead idle) and embedded in the .npz so capture_detail is
+        # a cheap read -- replaying it on the reactor thread on every UI open is a
+        # ~0.1-1s stall that can starve step generation ("Timer too close").
+        # 'v' stamps the algorithm/format version so a later code change
+        # invalidates this cache (see DETAIL_VERSION / _handle_capture_detail).
+        out = {'v': DETAIL_VERSION, 'trace': None, 'plot': None}
+        if not len(arr):
+            return out
+        t0 = meta.get('t0')
+        t_rel = arr[:, 0] - (float(t0) if t0 is not None else arr[0, 0])
+        force = -(arr[:, 2] - arr[:, 3])
+        dt, df = self._decimate_minmax(t_rel, force)
+        out['trace'] = {'t': dt, 'force': df}
+        try:
+            kind = meta.get('kind')
+            if kind == 'decay':
+                res = self._estimate_decay(arr, meta)
+                if res is not None:
+                    plot = res.pop('plot', None) or {}
+                    plot['conf'] = res.get('conf')
+                    out['plot'] = plot
+            elif kind == 'sweep':
+                res = self._sweep_analyse(arr, meta)
+                out['plot'] = {'per_k': self._sweep_per_k(res),
+                               'k_opt': res.bd_k_opt}
+        except Exception:
+            logging.exception("autopa: capture_detail payload compute failed")
+        return self._native(out)
+
     def _handle_capture_detail(self, web_request):
         # webhooks endpoint autopa/capture_detail
         # {"capture": "latest"|<name>|<path>}: meta + stats + decimated raw
-        # trace + the kind-specific plot data, recomputed by replaying the saved
-        # samples through the SAME estimator code that produced the capture
-        # (nothing is re-implemented client-side).
+        # trace + the kind-specific plot data. Served from the precomputed
+        # 'detail' member embedded at save time; captures that lack it (pre-v2)
+        # or whose stored detail predates the current algorithm/format
+        # (DETAIL_VERSION) are recomputed from the retained samples.
         import numpy as np
         capture = web_request.get_str('capture', 'latest')
         try:
@@ -371,37 +523,23 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         except ValueError as e:
             raise web_request.error(str(e))
         try:
-            data = np.load(path, allow_pickle=False)
-            arr = np.asarray(data['samples'], dtype=float)
-            meta = json.loads(str(data['meta']))
-            stats = (json.loads(str(data['stats']))
-                     if 'stats' in data.files else {})
+            with np.load(path, allow_pickle=False) as data:
+                meta = json.loads(str(data['meta']))
+                stats = (json.loads(str(data['stats']))
+                         if 'stats' in data.files else {})
+                payload = None
+                if 'detail' in data.files:
+                    cached = json.loads(str(data['detail']))
+                    if cached.get('v') == DETAIL_VERSION:    # fresh: cheap read
+                        payload = cached
+                if payload is None:               # absent/stale: replay samples
+                    arr = np.asarray(data['samples'], dtype=float)
+                    payload = self._capture_detail_payload(arr, meta)
         except Exception as e:
             raise web_request.error("autopa: unreadable capture %s: %s"
                                     % (capture, e))
         detail = {'file': os.path.basename(path), 'meta': meta, 'stats': stats,
-                  'trace': None, 'plot': None}
-        if len(arr):
-            t0 = meta.get('t0')
-            t_rel = arr[:, 0] - (float(t0) if t0 is not None else arr[0, 0])
-            force = -(arr[:, 2] - arr[:, 3])
-            dt, df = self._decimate_minmax(t_rel, force)
-            detail['trace'] = {'t': dt, 'force': df}
-            try:
-                kind = meta.get('kind')
-                if kind == 'decay':
-                    res = self._estimate_decay(arr, meta)
-                    if res is not None:
-                        plot = res.pop('plot', None) or {}
-                        plot['conf'] = res.get('conf')
-                        detail['plot'] = plot
-                elif kind == 'sweep':
-                    res = self._sweep_analyse(arr, meta)
-                    detail['plot'] = {'per_k': self._sweep_per_k(res),
-                                      'k_opt': res.bd_k_opt}
-            except Exception:
-                logging.exception("autopa: capture_detail replay failed for %s"
-                                  % path)
+                  'trace': payload.get('trace'), 'plot': payload.get('plot')}
         web_request.send(self._native(detail))
 
     # -- status ---------------------------------------------------------------
@@ -445,6 +583,7 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
                     has_load_cell=self._load_cell is not None,
                     load_cell_name=getattr(self._load_cell, 'name', None),
                     max_extrude_cross_section=self._max_extrude_cross_section(),
+                    filament_area=self._filament_area(),
                     activity=dict(self._activity, now=float(eventtime)))
 
 

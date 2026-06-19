@@ -7,15 +7,14 @@
   import DecayPlot from './DecayPlot.svelte'
   import SweepPlot from './SweepPlot.svelte'
 
-  // Volumetric conversion for the SLOW/FAST inputs: people think in mm³/s, the
-  // AUTOPA_SWEEP command takes mm/s filament feed. Assumes 1.75 mm filament
-  // (the target audience); a 2.85 mm setup would read proportionally off.
-  const FIL_AREA = Math.PI * (1.75 / 2) ** 2 // 2.405 mm²
-  const vol2lin = (mm3) => Number(mm3) / FIL_AREA
+  // Flow inputs (VFR / VFR_LOW) are volumetric mm³/s — the print-relevant unit
+  // the user thinks in. The firmware converts to the linear mm/s feed using the
+  // printer's real extruder.filament_area (single source of truth), so the UI
+  // sends the mm³/s value as-is and 2.85 mm setups still work.
 
-  // params: { k, def, hint, tier, vol? }. tier 'common' shows in the advanced
-  // grid; 'expert' is tucked into a nested, rarely-needed group. vol fields are
-  // entered as mm³/s and converted to the command's mm/s on send.
+  // params: { k, def, hint, tier }. tier 'primary' is always visible; 'standard'
+  // shows in the advanced grid; 'expert' is tucked into a nested, rarely-needed
+  // group.
   const METHODS = {
     sweep: {
       label: 'Sweep',
@@ -24,12 +23,17 @@
           + 'across a K grid, picks the K that best tracks commanded flow. '
           + 'Needs homed axes (PA-gate wobble).',
       params: [
-        { k: 'SLOW', def: 2, hint: 'slow flow (mm³/s)', tier: 'common', vol: true },
-        { k: 'FAST', def: 18, hint: 'fast flow (mm³/s)', tier: 'common', vol: true },
-        { k: 'KSTART', def: 0.01, hint: 'K grid start', tier: 'common' },
-        { k: 'KEND', def: 0.08, hint: 'K grid end', tier: 'common' },
-        { k: 'KSTEP', def: 0.01, hint: 'K grid step', tier: 'common' },
-        { k: 'CYCLES', def: 8, hint: 'cycles per K', tier: 'common' },
+        { k: 'VFR', def: 18, hint: 'flow / VFR (mm³/s)', tier: 'primary' },
+        { k: 'VFR_LOW', def: 2, hint: 'baseline flow (mm³/s)', tier: 'standard' },
+        { k: 'KSTART', def: 0.01, hint: 'K grid start', tier: 'standard',
+          group: 'kgrid', groupLabel: 'K grid', short: 'start', pinned: true },
+        { k: 'KEND', def: 0.08, hint: 'K grid end', tier: 'standard',
+          group: 'kgrid', short: 'end' },
+        { k: 'KSTEP', def: 0.01, hint: 'K grid step', tier: 'standard',
+          group: 'kgrid', short: 'step' },
+        { k: 'CYCLES', def: 8, hint: 'cycles per K', tier: 'standard' },
+        { k: 'PRIME', def: 20, hint: 'bulk melt prime (mm)', tier: 'standard' },
+        { k: 'RETRACT', def: 6, hint: 'end retract (mm)', tier: 'standard' },
         { k: 'TSLOW', def: 1, hint: 'slow leg time (s)', tier: 'expert' },
         { k: 'TFAST', def: 0.25, hint: 'fast leg time (s)', tier: 'expert' },
         { k: 'WARMUP', def: 4, hint: 'first-leg warmup ×', tier: 'expert' },
@@ -47,15 +51,22 @@
           + 'τ is the optimal pressure advance. autopa\'s own method — faster '
           + 'than Sweep, but experimental.',
       params: [
-        { k: 'FLOW', def: 18, hint: 'flow (mm³/s)', tier: 'common', vol: true },
-        { k: 'PULSE', def: 2, hint: 'filament per pulse (mm)', tier: 'common' },
-        { k: 'OFF', def: 0.5, hint: 'pause between pulses (s)', tier: 'common' },
-        { k: 'PULSES', def: 20, hint: 'number of pulses', tier: 'common' },
-        { k: 'PRIME', def: 20, hint: 'bulk melt prime (mm)', tier: 'expert' },
+        { k: 'VFR', def: 18, hint: 'flow / VFR (mm³/s)', tier: 'primary' },
+        { k: 'OFF', def: 0.5, hint: 'pause between pulses (s)', tier: 'standard' },
+        { k: 'PULSES', def: 20, hint: 'number of pulses', tier: 'standard' },
+        { k: 'PRIME', def: 20, hint: 'bulk melt prime (mm)', tier: 'standard' },
+        { k: 'RETRACT', def: 6, hint: 'end retract (mm)', tier: 'standard' },
         { k: 'WARMUP', def: 10, hint: 'warmup pulses', tier: 'expert' },
+        // PULSE is auto-derived (firmware: pulse = EXCITATION × linear feed) so
+        // the excitation duration stays fixed as VFR changes — vary VFR, not this.
+        // Override PULSE directly only from the console.
+        { k: 'EXCITATION', def: 0.27, hint: 'excitation hold (s)', tier: 'expert' },
         { k: 'WINDOW', def: 0.14, hint: 'fit window (s)', tier: 'expert' },
         { k: 'SNRMIN', def: 4, hint: 'min SNR', tier: 'expert' },
-        { k: 'PA', def: 0, hint: 'PA during measure', tier: 'expert' },
+        // PA-during-measure is intentionally not exposed: Decay measures the
+        // melt relaxation at PA=0 (no injection confound), and Klipper only
+        // applies PA to moves with X/Y motion anyway — so a pure-E pulse train
+        // can't exercise it. Override PA from the console if you must.
         { k: 'MAXFILAMENT', def: 250, hint: 'max filament (mm)', tier: 'expert' },
       ],
       build: g.decay,
@@ -90,8 +101,28 @@
   let apply = $state(init.apply)
   let error = $state('')
   let params = $state(init.params)
-  let commonParams = $derived(METHODS[method].params.filter((p) => p.tier === 'common'))
+  let primaryParams = $derived(METHODS[method].params.filter((p) => p.tier === 'primary'))
   let expertParams = $derived(METHODS[method].params.filter((p) => p.tier === 'expert'))
+  // standard tier, with grouped params (e.g. the K grid) collapsed into one
+  // compound item: { group, label, members:[…] }. Order follows first appearance.
+  let standardItems = $derived((() => {
+    const out = [], seen = {}
+    for (const p of METHODS[method].params) {
+      if (p.tier !== 'standard') continue
+      if (!p.group) { out.push(p); continue }
+      if (!seen[p.group]) {
+        seen[p.group] = { group: p.group, label: p.groupLabel,
+                          pinned: p.pinned, members: [] }
+        out.push(seen[p.group])
+      }
+      seen[p.group].members.push(p)
+    }
+    return out
+  })())
+  // pinned standard items (e.g. the K grid) show directly; the rest stay tucked
+  // into the advanced disclosure.
+  let pinnedStandard = $derived(standardItems.filter((it) => it.pinned))
+  let advancedStandard = $derived(standardItems.filter((it) => !it.pinned))
 
   // write back on any change (deep-tracks params via JSON serialization)
   $effect(() => {
@@ -247,9 +278,8 @@
     for (const pd of m.params) {
       const v = params[method][pd.k]
       if (v === '') continue
-      if (pd.vol) { p[pd.k] = vol2lin(v).toFixed(4); continue } // always send converted
-      if (String(v) === String(pd.def)) continue               // unchanged → firmware default
-      p[pd.k] = v
+      if (String(v) === String(pd.def)) continue   // unchanged → firmware default
+      p[pd.k] = v                                   // VFR sent as-is (mm³/s)
     }
     if (!apply) p.APPLY = 0
     try {
@@ -349,17 +379,53 @@
 {/if}
 
 <section class="card">
+  <!-- a boxed knob on the run row: an uppercase caption followed by its
+       input(s) inline, matching the prep section's group boxes so the whole
+       page shares one compact control style. members carry an optional
+       per-input caption (the K grid's start/end/step; VFR's unit). -->
+  {#snippet knob(label, members)}
+    <div class="knob">
+      <span class="klabel">{label}</span>
+      {#each members as m}
+        <label class="sub" title={m.hint}>
+          {#if m.cap}<span class="dim">{m.cap}</span>{/if}
+          <input bind:value={params[method][m.k]}
+                 placeholder={String(m.def)} disabled={running} />
+        </label>
+      {/each}
+    </div>
+  {/snippet}
+
+  {#snippet field(it)}
+    <label>
+      <span class="pname">{it.k}</span>
+      <span class="phint">{it.hint}</span>
+      <input bind:value={params[method][it.k]} placeholder={String(it.def)}
+             disabled={running} />
+    </label>
+  {/snippet}
+
   <div class="runrow">
-    <button class="primary" onclick={run}
+    <button class="primary run" onclick={run}
             title={hotOk ? '' : 'heat the hotend first'}
             disabled={running || !lcOk || !hotOk || !conn.moonraker || prepBusy !== ''}>
       {running ? 'running…' : `Run ${METHODS[method].label.toLowerCase()} calibration`}
     </button>
-    <label class="apply">
-      <input type="checkbox" bind:checked={apply} disabled={running} />
-      apply result live
-    </label>
+    <div class="knobs">
+      {#each primaryParams as p}
+        {@render knob(p.k, [{ k: p.k, cap: 'mm³/s', def: p.def, hint: p.hint }])}
+      {/each}
+      {#each pinnedStandard as it}
+        {@render knob(it.label, it.members.map((m) =>
+          ({ k: m.k, cap: m.short, def: m.def, hint: m.hint })))}
+      {/each}
+    </div>
   </div>
+
+  <label class="apply">
+    <input type="checkbox" bind:checked={apply} disabled={running} />
+    apply result live
+  </label>
 
   {#if running}
     <div class="progress">
@@ -369,42 +435,35 @@
   {/if}
   {#if error}<p class="error">{error}</p>{/if}
 
+  <!-- VFR explainer lives right under the knob it explains, top-level (not
+       buried inside advanced), collapsed so it never adds clutter -->
+  <details class="vfr-help">
+    <summary>ⓘ what is VFR?</summary>
+    <p>VFR is the <strong>volumetric flow rate</strong> — how many mm³ of
+      plastic the nozzle melts per second (for 1.75 mm filament). Rough scale: a
+      0.4 × 0.2 mm line is ≈ 0.4 mm³/s at 5 mm/s, ≈ 6 at 80 mm/s, ≈ 16 at
+      200 mm/s. Most stock hotends top out near 10–15 mm³/s; high-flow ones
+      reach 25–30.</p>
+  </details>
+
   <details class="advanced" open={false}>
     <summary>advanced parameters</summary>
     <div class="grid">
-      {#each commonParams as p}
-        <label>
-          <span class="dim">{p.k} <small>· {p.hint}</small></span>
-          <input bind:value={params[method][p.k]} placeholder={String(p.def)}
-                 disabled={running} />
-        </label>
+      {#each advancedStandard as it}
+        {#if it.group}
+          {#each it.members as m}{@render field(m)}{/each}
+        {:else}{@render field(it)}{/if}
       {/each}
-    </div>
-    <p class="flow-note">
-      <strong>ℹ Reading these flows.</strong> They are volumetric — mm³/s of
-      plastic, assuming 1.75 mm filament. Rough scale: a 0.4 × 0.2 mm line is
-      ≈ 0.4 mm³/s at 5 mm/s, ≈ 6 at 80 mm/s, ≈ 16 at 200 mm/s. Most stock
-      hotends top out near 10–15 mm³/s; high-flow ones reach 25–30.</p>
-    <details class="expert">
-      <summary>expert · rarely needed</summary>
-      <div class="grid">
-        {#each expertParams as p}
-          <label>
-            <span class="dim">{p.k} <small>· {p.hint}</small></span>
-            <input bind:value={params[method][p.k]} placeholder={String(p.def)}
-                   disabled={running} />
-          </label>
-        {/each}
-      </div>
-    </details>
-    <div class="resetrow">
-      <button class="reset" onclick={resetDefaults} disabled={running || atDefaults}>
-        reset {METHODS[method].label.toLowerCase()} to defaults
-      </button>
-      <span class="dim hint">Defaults shown are the canonical values; only changed
-        fields are sent.</span>
+      {#each expertParams as p}{@render field(p)}{/each}
     </div>
   </details>
+  <div class="resetrow">
+    <button class="reset" onclick={resetDefaults} disabled={running || atDefaults}>
+      reset {METHODS[method].label.toLowerCase()} to defaults
+    </button>
+    <span class="dim hint">Defaults shown are the canonical values; only changed
+      fields are sent.</span>
+  </div>
 </section>
 
 {#if !running && last?.decay}
@@ -539,8 +598,17 @@
   .tag.warn-t { color: var(--warn); }
   .mdesc { font-size: 0.875rem; font-weight: 400; }
 
-  .runrow { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
-  .apply { display: flex; gap: var(--sp-1); align-items: center; color: var(--text-dim); }
+  /* run + its essential knobs as one strip: the boxed knobs set the row height
+     and the call-to-action button stretches to match them. The apply toggle is
+     a run option that sits on its own line just below, so it never competes
+     with the knobs for width (which blew the row out on Sweep). */
+  .runrow { display: flex; gap: var(--sp-3); align-items: stretch; flex-wrap: wrap; }
+  .run { font-weight: 600; padding-inline: var(--sp-3); }
+  .knobs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+  .apply {
+    display: inline-flex; gap: var(--sp-1); align-items: center;
+    margin-top: var(--sp-2); color: var(--text-dim);
+  }
   .progress { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
   .bar {
     flex: 1;
@@ -553,9 +621,6 @@
   .error { color: var(--bad); margin: var(--sp-2) 0 0; }
 
   .advanced { margin-top: var(--sp-3); }
-  .expert { margin-top: var(--sp-2); padding-left: var(--sp-2);
-            border-left: 2px solid var(--border); }
-  .expert > summary { font-size: 0.85rem; }
   summary { cursor: pointer; color: var(--text-dim); }
   .grid {
     display: grid;
@@ -563,16 +628,44 @@
     gap: var(--sp-2);
     margin-top: var(--sp-2);
   }
+  /* boxed knob (VFR, K grid): an uppercase caption and its input(s) inline in
+     one horizontal box, identical to the prep section's groups so the page has
+     a single control style. The box is the darkest surface; inputs sit one
+     shade lighter (--bg) so they stay legible against it. */
+  .knob {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-inset);
+  }
+  .klabel {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+  }
+  .knob .sub {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 0.85rem; color: var(--text-dim);
+  }
+  .knob input { width: 4.4em; background: var(--bg); }
+  /* advanced cells: a consistent name + hint + input stack so every cell is two
+     deliberate lines instead of a ragged wrapped title */
   .grid label {
     display: flex;
     flex-direction: column;
-    justify-content: flex-end; /* pin inputs to the bottom so rows line up */
     gap: 2px;
-    font-size: 0.9rem;
   }
-  /* reserve two lines for the caption so single- and double-line labels keep
-     their inputs on the same baseline across the grid */
-  .grid label > .dim { min-height: 2.5em; }
+  .pname { font-size: 0.9rem; font-weight: 600; color: var(--text-dim); }
+  .phint { font-size: 0.8rem; line-height: 1.3; color: var(--text-dim); }
+  /* the grid stretches each cell to its row height; pinning the input to the
+     bottom keeps inputs aligned across a row when one hint wraps, without
+     reserving an empty second line when none do */
+  .grid label input { margin-top: auto; }
   .hint { font-size: 0.85rem; margin: var(--sp-2) 0 0; color: var(--text-dim); }
   .resetrow {
     display: flex;
@@ -582,7 +675,9 @@
     margin-top: var(--sp-3);
   }
   .resetrow .hint { margin: 0; }
-  .flow-note {
+  .vfr-help { margin-top: var(--sp-2); }
+  .vfr-help > summary { font-size: 0.85rem; }
+  .vfr-help p {
     margin: var(--sp-2) 0 0;
     padding: var(--sp-2) var(--sp-3);
     border-radius: var(--radius);
@@ -591,7 +686,7 @@
     font-size: 0.85rem;
     line-height: 1.45;
   }
-  .flow-note strong { color: var(--accent); font-weight: 600; }
+  .vfr-help strong { color: var(--accent); font-weight: 600; }
 
   .sweep-note {
     margin: 0 0 var(--sp-3);

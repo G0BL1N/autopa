@@ -58,22 +58,25 @@ class SweepMixin:
         "slow/fast extrusion square wave (the recommended method). Reports optimal "
         "K from force-tracking (bd step-response), applies it live when a valid "
         "K is found (APPLY=0 to skip), and prints a paste-able "
-        "SET_PRESSURE_ADVANCE line. Args: SLOW FAST TSLOW TFAST CYCLES KSTART "
-        "KEND KSTEP WARMUP MAXFILAMENT WOBBLEAXIS WOBBLE ACCEL APPLY.")
+        "SET_PRESSURE_ADVANCE line. VFR / VFR_LOW are the fast/slow leg volumetric "
+        "flows (mm^3/s). Args: VFR VFR_LOW TSLOW TFAST CYCLES KSTART KEND KSTEP "
+        "WARMUP PRIME RETRACT MAXFILAMENT WOBBLEAXIS WOBBLE ACCEL APPLY.")
     def cmd_AUTOPA_SWEEP(self, gcmd):
         import numpy as np
         lc = self._get_load_cell(gcmd)
         toolhead = self.printer.lookup_object('toolhead')
         self._check_extrude_temp(gcmd)
-        # mm/s filament feed. Defaults ~0.83 / 7.5 mm/s == 2 / 18 mm³/s for
-        # 1.75 mm filament (the web UI presents these as volumetric mm³/s). The
-        # fast leg is intentionally high to create a strong flow step for PA to
-        # act on; 18 mm³/s is brief (per fast leg) so even modest extruders
-        # reach it. The web UI shows the volumetric equivalents.
-        slow = gcmd.get_float('SLOW', 0.83, above=0.)
-        fast = gcmd.get_float('FAST', 7.5, above=0.)
+        # Volumetric flow (mm^3/s); converted to the linear filament feed (mm/s)
+        # internally via the single source of truth (_vol_to_lin -> filament_area).
+        # Defaults 2 / 18 mm³/s. VFR (the fast/calibration leg) is intentionally
+        # high to create a strong flow step for PA to act on; it is brief (per fast
+        # leg) so even modest extruders reach it. VFR_LOW is the baseline leg.
+        vfr = gcmd.get_float('VFR', 18.0, above=0.)
+        vfr_low = gcmd.get_float('VFR_LOW', 2.0, above=0.)
+        fast = self._vol_to_lin(vfr)          # mm/s linear feed (internal)
+        slow = self._vol_to_lin(vfr_low)
         if fast <= slow:
-            raise gcmd.error("autopa sweep: FAST must be > SLOW")
+            raise gcmd.error("autopa sweep: VFR must be > VFR_LOW")
         tslow = gcmd.get_float('TSLOW', 1.0, above=0.1, maxval=10.)
         tfast = gcmd.get_float('TFAST', 0.25, above=0.05, maxval=10.)
         cycles = gcmd.get_int('CYCLES', 8, minval=3, maxval=40)
@@ -115,6 +118,15 @@ class SweepMixin:
         # Sweep is experimental and frequently finds no valid optimum, so the
         # report only applies when K_opt is a real non-negative value.
         apply = bool(gcmd.get_int('APPLY', 1, minval=0, maxval=1))
+        # Continuous bulk prime before the sweep (mm filament): clears an
+        # end-of-print retract and saturates the melt so the first measured cycle
+        # already sits near steady pressure (parity with AUTOPA_DECAY's PRIME; the
+        # warmup-extended first slow leg alone starts from a relaxed melt).
+        prime = gcmd.get_float('PRIME', 20.0, minval=0.)
+        # Post-calibration retract (mm filament): pull the charged melt back when
+        # done so the sweep doesn't leave an oozing blob in-air. 6mm clears a
+        # typical melt zone (2mm barely dents the ooze on most hotends). 0 disables.
+        retract = gcmd.get_float('RETRACT', 6.0, minval=0.)
         axis_idx = {'X': 0, 'Y': 1}[wobble_axis]
 
         slow_half = tslow
@@ -129,7 +141,7 @@ class SweepMixin:
         fast_mm = fast * tfast
         per_k = slow_mm + cycles * (fast_mm + slow_mm)
         warmup_extra = (warmup - 1.0) * slow_mm     # first K's extended leg
-        total_mm = per_k * len(ks) + warmup_extra
+        total_mm = per_k * len(ks) + warmup_extra + prime
         if total_mm > maxmm:
             raise gcmd.error(
                 "autopa sweep would extrude %.0fmm over %d K values "
@@ -213,6 +225,11 @@ class SweepMixin:
             if wobbling:
                 self.gcode.run_script_from_command(
                     "SET_VELOCITY_LIMIT ACCEL=%.0f" % accel)
+            # continuous bulk prime (pure-E, before the timed legs) -- safe even
+            # un-homed/while wobbling since it moves no axis
+            if prime > 0:
+                self.gcode.run_script_from_command(
+                    "G1 E%.4f F%.0f" % (prime, fast * 60.))
             base = toolhead.get_position()[axis_idx] if wobbling else 0.
             hi_pos = base + wobble
             lo_pos = base
@@ -250,6 +267,11 @@ class SweepMixin:
                 transitions.append((rising, falling))
             t_end = toolhead.get_last_move_time()
             samples, errs = collector.collect_until(t_end)
+            # post-calibration retract: pull the charged melt back so the sweep
+            # doesn't leave an oozing blob in-air (pure-E; after collection)
+            if retract > 0:
+                self.gcode.run_script_from_command(
+                    "G1 E-%.4f F%.0f" % (retract, fast * 60.))
         finally:
             self._clear_busy()
             # Release the load-cell collector even if the sweep aborts before
@@ -282,9 +304,14 @@ class SweepMixin:
                 logging.exception("autopa sweep: gcode-state restore failed")
 
         meta = self._base_meta(lc, 'sweep', gcmd)
-        meta.update({'slow': slow, 'fast': fast, 'tslow': tslow, 'tfast': tfast,
+        # VFR-native schema: 'vfr' is the fast/calibration leg, 'vfr_low' the
+        # baseline leg (both mm^3/s, the print-relevant flow). The linear feeds are
+        # a runtime detail (filament_area in meta re-derives them), so not stored.
+        meta.update({'vfr': vfr, 'vfr_low': vfr_low,
+                     'tslow': tslow, 'tfast': tfast,
                      'cycles': cycles, 'orig_pa': orig_pa, 'ks': ks,
                      'kstep': kstep, 'warmup': warmup, 't0': t0, 'errs': errs,
+                     'prime': prime, 'retract': retract,
                      'wobble': wobble, 'wobble_axis': wobble_axis,
                      'accel': accel, 'apply': apply,
                      'windows': [(a - t0, b - t0) for a, b in windows],
@@ -299,11 +326,24 @@ class SweepMixin:
         from . import sweep_analysis as sa
         t_rel = arr[:, 0] - meta['t0']
         force = -(arr[:, 2] - arr[:, 3])     # push -> larger; raw counts
+        slow_v, fast_v = self._sweep_lin(meta)
         return sa.analyse_sweep_segments(
             t_rel, force, meta['ks'], meta['windows'], meta['transitions'],
-            slow_v=meta['slow'], fast_v=meta['fast'],
+            slow_v=slow_v, fast_v=fast_v,
             slow_half_s=meta['tslow'], fast_half_s=meta['tfast'],
             cycle_period_s=meta['tslow'] + meta['tfast'])
+
+    def _sweep_lin(self, meta):
+        # Linear leg feeds (mm/s) for the analysis, from the VFR-native schema.
+        # Falls back to the legacy linear ('slow'/'fast') or vfr_slow/vfr_fast keys
+        # so saved captures from older schema versions still replay.
+        fast = meta.get('fast')
+        if fast is None:
+            fast = self._vol_to_lin(meta.get('vfr', meta.get('vfr_fast')))
+        slow = meta.get('slow')
+        if slow is None:
+            slow = self._vol_to_lin(meta.get('vfr_low', meta.get('vfr_slow')))
+        return float(slow), float(fast)
 
     @staticmethod
     def _sweep_per_k(res):
@@ -318,19 +358,35 @@ class SweepMixin:
                  'undershoot': _f(bd.medians.get('undershoot', float('nan')))}
                 for bd in res.bd_per_k]
 
+    def _sweep_compute(self, arr, meta):
+        # Reactor-free: analyse + (optionally) write the capture. Runs on the
+        # offload worker so the multi-second replay+savez never blocks the
+        # reactor (see _run_off_reactor). Returns (analysis, saved-or-None).
+        res = self._sweep_analyse(arr, meta)
+        saved = None
+        if self.save_captures:
+            result = {'k_opt': res.bd_k_opt, 'bd_k_opt': res.bd_k_opt,
+                      'sample_rate_hz': res.sample_rate_hz}
+            saved = self._write_capture(arr, meta, dict(kind='sweep', **result))
+        return res, saved
+
     def _report_sweep(self, gcmd, arr, meta):
-        import numpy as np
         if not len(arr):
             raise gcmd.error("autopa sweep: no samples captured (errors=%s)"
                              % (meta['errs'],))
-        res = self._sweep_analyse(arr, meta)
+        # heavy work (analyse + capture write) off the reactor; everything below
+        # builds text / touches shared state and stays on the reactor thread.
+        res, saved = self._run_off_reactor(self._sweep_compute, arr, meta)
 
         wob = meta.get('wobble', 0.)
         wob_desc = ("%s-wobble %.3fmm" % (meta.get('wobble_axis', '?'), wob)
                     if wob > 0. else "PURE-E (no PA!)")
-        lines = ["autopa sweep: slow=%.2f fast=%.2f mm/s, %dx(%.2f/%.2fs), "
-                 "%d K, %s, %.0f SPS, errors=%s"
-                 % (meta['slow'], meta['fast'], meta['cycles'], meta['tslow'],
+        slow_v, fast_v = self._sweep_lin(meta)
+        lines = ["autopa sweep: VFR_LOW=%.1f VFR=%.1f mm³/s, "
+                 "%dx(%.2f/%.2fs), %d K, %s, %.0f SPS, errors=%s"
+                 % (meta.get('vfr_low', self._lin_to_vol(slow_v)),
+                    meta.get('vfr', self._lin_to_vol(fast_v)),
+                    meta['cycles'], meta['tslow'],
                     meta['tfast'], len(meta['ks']), wob_desc, meta['sps'],
                     meta['errs'])]
         if wob <= 0.:
@@ -385,10 +441,9 @@ class SweepMixin:
 
         result = {'k_opt': res.bd_k_opt, 'bd_k_opt': res.bd_k_opt,
                   'sample_rate_hz': res.sample_rate_hz}
-        if self.save_captures:
-            path = self._save_capture(arr, meta, dict(kind='sweep', **result))
-            if path:
-                lines.append("capture saved: %s" % path)
+        path = self._register_capture(saved)
+        if path:
+            lines.append("capture saved: %s" % path)
         # per_k is UI-only (kept out of the saved-capture stats, like decay's
         # plot); coerce to native now so get_status isn't re-coercing each poll
         self._last = self._native(

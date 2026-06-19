@@ -26,35 +26,63 @@ class DecayMixin:
         "time-constant tau "
         "(= optimal PA), robust-median over pulses. Reports tau, applies it "
         "live (APPLY=0 to skip), and prints a paste-able SET_PRESSURE_ADVANCE "
-        "line. Args: FLOW PULSE OFF PULSES PA PRIME WARMUP WINDOW SNRMIN "
-        "MAXFILAMENT "
-        "APPLY.")
+        "line. VFR is the volumetric flow (mm^3/s). Args: VFR PULSE OFF PULSES "
+        "PA PRIME WARMUP WINDOW SNRMIN MAXFILAMENT RETRACT APPLY.")
     def _decay_params(self, gcmd):
         # parsing for AUTOPA_DECAY
+        vfr = gcmd.get_float('VFR', 18.0, above=0.)        # mm^3/s volumetric flow
+        flow = self._vol_to_lin(vfr)                       # mm/s linear feed (internal)
+        # Excitation duration (s) = PULSE/flow. EXCITATION holds it at ~0.27s so
+        # varying VFR does NOT silently change how fully the melt charges: PULSE
+        # auto-scales with the linear feed. Pass PULSE to override the coupling.
+        # The exact value is not critical -- it only has to exceed ~5*tau (see
+        # below); 0.27 sits comfortably above that, so rounding it off the old
+        # 2.0/7.5 = 0.2667 does not change the result.
+        excit = gcmd.get_float('EXCITATION', 0.27, above=0.)
+        pulse = gcmd.get_float('PULSE', None, above=0.)
+        if pulse is None:
+            pulse = excit * flow
         p = {
-            # FLOW=7.5 mm/s (== 18 mm³/s for 1.75 mm filament, the web UI's
-            # volumetric default; matches the sweep fast leg), PULSE=2 mm
-            # (~0.25s extrusion) is the canonical point: short, print-like
-            # excitation makes the measured tau track sweep (and the true PA)
-            # across materials/temps. Longer extrusion (lower flow or longer
-            # pulse) over-excites the slow ooze mode and inflates tau -- see
-            # docs/CALIBRATION.md.
-            'flow': gcmd.get_float('FLOW', 7.5, above=0.),      # mm/s filament
-            'pulse': gcmd.get_float('PULSE', 2.0, above=0.),    # mm per pulse
+            # VFR=18 mm³/s (the volumetric default; == 7.5 mm/s linear for 1.75 mm
+            # filament, and matches the sweep calibration leg). PULSE auto = ~2 mm.
+            #
+            # Excitation duration = PULSE/flow ~= 0.27s. This is NOT arbitrary:
+            # the load cell reads melt pressure, which at constant flow rises
+            # toward steady state as a 1st-order system with time constant tau --
+            # and that tau IS pressure advance (Klipper PA models exactly this
+            # pressure-vs-flow lag). A 1st-order system reaches ~99% of steady
+            # state in ~5 tau; with tau ~= 0.045s for PLA/PETG, 5 tau ~= 0.225s,
+            # so ~0.27s exists to FULLY develop the melt pressure PA compensates,
+            # making the post-stop decay reflect the same fully-charged compliance
+            # a steady print sees. It also explains the unavoidable slow ooze tail:
+            # the slow mode's constant (tau_slow ~= 0.13s) is SHORTER than 5*tau,
+            # so the fast mode can't be fully charged without partly charging the
+            # slow one -- which is why a single-exp tau is window-dependent (see
+            # WINDOW) and a bi-exp "fast-mode extraction" fails (it discards the
+            # very signal sweep's optimum responds to).
+            #
+            # Held fixed (not exposed): excitation and window are the same
+            # tau-coupled knob. PULSE auto-scales with the linear feed so the
+            # duration is VFR-invariant by construction. Revisit tau-adaptive
+            # excitation only for materials whose tau leaves the band where
+            # 5*tau ~= 0.2-0.3s.
+            'vfr': vfr,                                  # mm^3/s (the user knob)
+            'flow': flow,                  # mm/s linear feed (internal; from VFR)
+            'pulse': pulse,            # mm per pulse (auto = EXCITATION * lin feed)
             'off': gcmd.get_float('OFF', 0.5, above=0.1, maxval=5.),
             'pulses': gcmd.get_int('PULSES', 20, minval=3, maxval=200),
             'pa': gcmd.get_float('PA', 0.0, minval=0.),
-            # early-window exp fit length (s). The post-stop force is bi-modal:
+            # Early-window exp fit length (s). The post-stop force is bi-modal:
             # a FAST melt-pressure relaxation (= Klipper's 1st-order PA tau) plus
             # a SLOW ooze/thermal tail. A full-window single-exp gets dragged up
             # by the tail (tau 0.04->0.066 run-to-run); fitting only the first
             # ~3 tau isolates the PA-relevant fast mode and ~halves the spread.
-            # Fixed measurement window (s) -- NOT a plastic param but a property
-            # of the measurement: watch ~4-6x tau of the decay. 0.14s suits the
-            # PLA/PETG range (tau 0.024-0.040). Raise it for exotic long-tau
-            # materials; auto-scaling was rejected (it tracks the mean but adds
-            # run-to-run variance, and can't be validated without non-PLA data).
-            'window': gcmd.get_float('WINDOW', 0.14, above=0.02, maxval=0.5),
+            # WINDOW is a FIXED convention (the defining cut for the reported tau):
+            # the sv2 multi-material suite showed no fit-free observable reproduces
+            # sweep's cross-material spread, so an auto/adaptive window was rejected
+            # (see memory decay-tau-area-rejected). 0.14 matches sweep for stiff
+            # PLA/PETG-CF; oozy PETG reads lower but neither method is ground truth.
+            'window': gcmd.get_float('WINDOW', 0.14, above=0., maxval=0.5),
             'snrmin': gcmd.get_float('SNRMIN', 4.0, minval=0.),
             # Two-stage prime so the first MEASURED pulse already sits in the
             # pulsed quasi-steady-state. (1) PRIME: a continuous bulk fill that
@@ -71,6 +99,11 @@ class DecayMixin:
             'prime': gcmd.get_float('PRIME', 20.0, minval=0.),  # mm filament
             'warmup': gcmd.get_int('WARMUP', 10, minval=0, maxval=100),
             'maxmm': gcmd.get_float('MAXFILAMENT', 250., above=0.),
+            # Post-calibration retract (mm filament): the run ends with a charged,
+            # molten nozzle that oozes a blob in-air. Pull the melt back when done
+            # so the toolhead is left clean. 6mm clears a typical melt zone (2mm
+            # barely dents the ooze on most hotends). 0 disables.
+            'retract': gcmd.get_float('RETRACT', 6.0, minval=0.),
             # Apply the measured PA live on success (default on): a mid-print
             # run can then be ignored and the print just continues with the
             # calibrated value. APPLY=0 measures without touching printer state.
@@ -124,6 +157,11 @@ class DecayMixin:
                 toolhead.dwell(p['off'])
             t_end = toolhead.get_last_move_time()
             samples, errs = collector.collect_until(t_end)
+            # post-calibration retract: pull the charged melt back so the run
+            # doesn't leave an oozing blob in-air (unrecorded; after collection).
+            if p['retract'] > 0:
+                self.gcode.run_script_from_command(
+                    "G1 E-%.4f F%.0f" % (p['retract'], p['flow'] * 60.))
         finally:
             # Release the load-cell collector even if the run aborts before
             # collect_until returns: a collector left "started" stays subscribed
@@ -146,11 +184,18 @@ class DecayMixin:
                 logging.exception("autopa decay: gcode-state restore failed")
         stops.sort()
         meta = self._base_meta(lc, 'decay', gcmd)
-        meta.update({'flow': p['flow'], 'pulse': p['pulse'], 'off': p['off'],
+        # VFR-native schema: 'vfr' (mm^3/s) is the print-relevant flow the user set;
+        # excitation_s = pulse/lin-feed is the melt-pressure charge time. The linear
+        # feed is a runtime detail (filament_area in meta lets any tool re-derive it),
+        # so it is NOT stored. pulse is in mm filament (geometry, not a rate).
+        meta.update({'vfr': p['vfr'],
+                     'excitation_s': p['pulse'] / p['flow'],
+                     'pulse': p['pulse'], 'off': p['off'],
                      'pulses': p['pulses'], 'pa': p['pa'], 'prime': p['prime'],
                      'warmup': p['warmup'], 'window': p['window'],
-                     'stops': stops, 'apply': p['apply'], 'snrmin': p['snrmin'],
-                     'tailskip': 0.0, 't0': t0, 'errs': errs})
+                     'retract': p['retract'], 'stops': stops, 'apply': p['apply'],
+                     'snrmin': p['snrmin'], 'tailskip': 0.0, 't0': t0,
+                     'errs': errs})
         return np.asarray(samples, dtype=float), meta
 
     def cmd_AUTOPA_DECAY(self, gcmd):
@@ -167,11 +212,13 @@ class DecayMixin:
         self._set_busy('decay', self._decay_expected_s(p))
         try:
             arr, meta = self._capture_decay(lc, toolhead, p, gcmd)
-            res = self._estimate_decay(arr, meta)
+            # heavy work (fit + capture write) off the reactor (see
+            # _run_off_reactor); the report below stays on the reactor thread.
+            res, saved = self._run_off_reactor(self._decay_compute, arr, meta)
             if res is None:
                 raise gcmd.error("autopa decay: insufficient/unfittable data "
                                  "(errors=%s)" % (meta['errs'],))
-            self._report_decay(gcmd, arr, meta, res)
+            self._report_decay(gcmd, meta, res, saved)
         finally:
             self._clear_busy()
 
@@ -217,13 +264,20 @@ class DecayMixin:
         g = cnt > 0
         return (0.5 * (edges[:-1] + edges[1:]))[g], acc[g] / cnt[g]
 
+    # Fixed fit window (s) -- the defining convention for the reported tau.
+    # An adaptive/auto window was investigated against the sv2 multi-material suite
+    # and REJECTED: no fit-free observable reproduces sweep's cross-material spread,
+    # and a tail-weighted estimator (tau_area) compressed contrast and broke
+    # VFR-monotonicity on oozy PETG (see memory decay-tau-area-rejected). So the
+    # window is a fixed value; WINDOW overrides it for A/B testing.
+    DEFAULT_WINDOW = 0.14
+
     def _estimate_decay(self, arr, meta):
         # Pure analysis (no gcmd): MAD-reject bad pulses, fold, early-window
         # exp fit, slow-tail slack, group-spread repeatability, confidence.
         # Returns a result dict or None.
         import numpy as np
         stops, off = meta['stops'], meta['off']
-        window = meta.get('window', 0.14)
         if len(arr) < 20 or len(stops) < 4:
             return None
         t = arr[:, 0]
@@ -243,8 +297,10 @@ class DecayMixin:
         good = [stops[i] for i in range(len(stops)) if keep[i]]
         if len(good) < 4:
             return None
-        # headline tau: fit the fold of all good pulses (best SNR)
+        # headline tau: fit the fold of all good pulses (best SNR) on the fixed
+        # window (meta['window'] holds the value used, for reproducible replay).
         te, fe = self._fold_decay(good, t, force, off)
+        window = meta.get('window') or self.DEFAULT_WINDOW
         r = self._fit_tau(te, fe, window)
         if r is None:
             return None
@@ -276,7 +332,7 @@ class DecayMixin:
         # Plot-ready fold + fit overlay for the UI. Display-only and additive:
         # the A,C here are the same lstsq _fit_tau solved at the chosen tau
         # (re-run once to recover C, which _fit_tau doesn't return). Callers
-        # pop 'plot' before _save_capture so the schema-v1 stats are unchanged.
+        # exclude 'plot' from the saved stats so the schema-v1 layout is kept.
         mw = te <= window
         B = np.vstack([np.exp(-te[mw] / tau), np.ones(int(mw.sum()))]).T
         coef, _, _, _ = np.linalg.lstsq(B, fe[mw], rcond=None)
@@ -285,16 +341,32 @@ class DecayMixin:
                 'window': float(window)}
         return {'tau': float(tau), 'snr': float(snr), 'spread': spread,
                 'slack': float(slack), 'n_used': len(good), 'conf': conf,
-                'plot': plot}
+                'window_used': float(window), 'plot': plot}
 
-    def _report_decay(self, gcmd, arr, meta, res):
+    def _decay_compute(self, arr, meta):
+        # Reactor-free: fit + (optionally) write the capture. Runs on the
+        # offload worker so the fit grid + savez never block the reactor (see
+        # _run_off_reactor). Returns (fit-result-or-None, saved-or-None). The
+        # saved stats exclude the UI-only 'plot' to keep the schema-v1 layout;
+        # 'plot' stays on the returned result for _report_decay / _last.
+        res = self._estimate_decay(arr, meta)
+        if res is None:
+            return None, None
+        saved = None
+        if self.save_captures:
+            stats = {k: v for k, v in res.items() if k != 'plot'}
+            saved = self._write_capture(arr, meta, dict(stats, kind='decay'))
+        return res, saved
+
+    def _report_decay(self, gcmd, meta, res, saved):
         plot = res.pop('plot', None)   # UI-only; keep saved stats schema-v1
         tau, snr, spread = res['tau'], res['snr'], res['spread']
         conf, slack = res['conf'], res['slack']
         lines = [
-            "autopa decay: %d pulses, %d usable, flow=%.1f mm/s, PA-during="
-            "%.3f, errors=%s" % (meta['pulses'], res['n_used'], meta['flow'],
-                                 meta['pa'], meta['errs']),
+            "autopa decay: %d pulses, %d usable, VFR=%.1f mm³/s, "
+            "PA-during=%.3f, errors=%s"
+            % (meta['pulses'], res['n_used'], meta['vfr'],
+               meta['pa'], meta['errs']),
             "  folded SNR=%.1f, group spread=+/-%.4f, slow-tail slack=%.2f"
             % (snr, spread, slack),
             "  tau = %.4f s  =>  pressure advance = %.4f  [%s confidence]"
@@ -307,10 +379,9 @@ class DecayMixin:
                          "ooze/blob may be inflating tau")
         # apply live (default) + always show the paste-able command
         self._report_applied_pa(lines, tau, meta.get('apply', True))
-        if self.save_captures:
-            path = self._save_capture(arr, meta, dict(kind='decay', **res))
-            if path:
-                lines.append("capture saved: %s" % path)
+        path = self._register_capture(saved)
+        if path:
+            lines.append("capture saved: %s" % path)
         # coerce to native python now (the plot holds numpy arrays); get_status
         # is polled ~4x/s and re-coercing these on every poll -- including during
         # the next run's motion -- is needless reactor work
