@@ -11,18 +11,18 @@
   let { active = false } = $props()
 
   const WINDOW_S = 15
-  const MIN_SPAN_G = 25 // don't let the y-axis zoom tighter than this (grams)
+  const MIN_SPAN = 25 // don't let the y-axis zoom tighter than this (counts)
   const STAGES = 3 // cascaded EMA passes ⇒ steeper rolloff than a single pole
   let el
   let chart
-  const buf = { t: [], f: [], s: [] } // time, raw grams, filtered grams
+  const buf = { t: [], f: [], s: [] } // time, raw counts, filtered counts
   let stages = null // running per-stage EMA state, kept across batches
   let raf = 0
 
   // client-side smoothing: a 3-stage cascaded exponential moving average over
-  // the raw grams. A single pole left a "fat" residual at high noise; cascading
+  // the raw counts. A single pole left a "fat" residual at high noise; cascading
   // gives a much steeper rolloff. Display-only — the raw buffer is untouched and
-  // calibration math runs server-side on the unsmoothed stream.
+  // the calibration math runs server-side on the unsmoothed stream.
   let smooth = $state(true)
   let strength = $state(0.7) // 0 = light, 1 = heavy
   let showRaw = $state(true)
@@ -55,7 +55,10 @@
     if (document.hidden) return // keep streaming, skip the work
     const a = alpha
     for (const row of params?.data ?? []) {
-      const f = row[1] // grams
+      // [time, grams, counts, tare]; plot tare-relative counts so the trace is
+      // live without calibration (grams, row[1], is null until calibrated).
+      // tare is null on an uncalibrated cell -> fall back to raw counts.
+      const f = row[2] - (row[3] ?? 0) // counts
       buf.t.push(row[0])
       buf.f.push(f)
       buf.s.push(step(f, a))
@@ -135,7 +138,7 @@
               if (f[i] > hi) hi = f[i]
             }
             const mid = (lo + hi) / 2
-            const half = Math.max(hi - lo, MIN_SPAN_G) / 2 * 1.1
+            const half = Math.max(hi - lo, MIN_SPAN) / 2 * 1.1
             return [mid - half, mid + half]
           },
         },
