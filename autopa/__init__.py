@@ -309,6 +309,12 @@ class AutoPA(CaptureMixin, DecayMixin, SweepMixin, ProfileMixin):
         # compute + file I/O over immutable inputs; anything touching
         # printer/gcode/shared state stays on the reactor, after this returns.
         import threading
+        # Drain the motion queue first. Callers queue moves right before this
+        # (the sweep's end-of-run retract and its RESTORE_GCODE_STATE MOVE=1
+        # return); starting the worker while those steps are still in flight
+        # lets GIL contention and capture I/O delay step generation, and the
+        # toolhead MCU can shut down with "Timer too close".
+        self.printer.lookup_object('toolhead').wait_moves()
         comp = self.reactor.completion()
         def worker():
             try:
